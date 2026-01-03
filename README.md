@@ -31,7 +31,7 @@ BitStream is a fully-featured FTP client for the ZX Spectrum, enabling file down
 
 ### Software
 - esxDOS 0.8.x or higher
-- WiFi network pre-configured on ESP module (use [NetManZX](https://github.com/imnacio/netmanzx) or similar)
+- WiFi network pre-configured on ESP module (use [NetManZX](https://github.com/IgnacioMonge/NetManZX) or similar)
 
 ## Installation
 
