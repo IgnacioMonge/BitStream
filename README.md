@@ -1,3 +1,5 @@
+![BitStream Banner](images/bitstream-logo-white.png)
+
 # BitStream v1.0
 
 **FTP Client for ZX Spectrum**
