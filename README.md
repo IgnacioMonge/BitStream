@@ -156,7 +156,7 @@ This project is released under the MIT License. See [LICENSE](LICENSE) for detai
 
 ## Links
 
-- [NetManZX](https://github.com/imnacio/netmanzx) - WiFi network manager for ZX Spectrum
+- [NetManZX](https://github.com/IgnacioMonge/NetManZX) - WiFi network manager for ZX Spectrum
 - [esxDOS](http://esxdos.org) - DOS for divMMC interfaces
 - [z88dk](https://github.com/z88dk/z88dk) - Z80 development kit
 
