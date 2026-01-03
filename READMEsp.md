@@ -31,7 +31,7 @@ BitStream es un cliente FTP completo para ZX Spectrum que permite descargar arch
 
 ### Software
 - esxDOS 0.8.x o superior
-- Red WiFi preconfigurada en el módulo ESP (usa [NetManZX](https://github.com/imnacio/netmanzx) o similar)
+- Red WiFi preconfigurada en el módulo ESP (usa [NetManZX](https://github.com/IgnacioMonge/NetManZX) o similar)
 
 ## Instalación
 
