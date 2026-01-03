@@ -6,7 +6,6 @@
 
 BitStream es un cliente FTP completo para ZX Spectrum que permite descargar archivos desde servidores FTP a través de WiFi, utilizando un módulo ESP8266/ESP-12 conectado mediante AY-UART bit-banging a 9600 baudios.
 
-![BitStream Screenshot](screenshot.png)
 
 > 🇬🇧 **[Read in English](README.md)**
 
