@@ -1,166 +1,177 @@
 ![BitStream Banner](images/bitstream-logo-white.png)
 
-# BitStream v1.0
+# BitStream
+## Cliente FTP para ZX Spectrum
 
-**Cliente FTP para ZX Spectrum**
+[🇬🇧 English Version](README.md)
 
-BitStream es un cliente FTP completo para ZX Spectrum que permite descargar archivos desde servidores FTP a través de WiFi, utilizando un módulo ESP8266/ESP-12 conectado mediante AY-UART bit-banging a 9600 baudios.
-
-![BitStream Screenshot](screenshot.png)
-
-> 🇬🇧 **[Read in English](README.md)**
-
-## Características
-
-- **Pantalla de 64 columnas** - Interfaz limpia y legible con salida en colores
-- **Comandos FTP estándar** - OPEN, USER, PWD, CD, LS, GET, QUIT
-- **Conexión rápida** - `!CONNECT host/ruta usuario [pass]` para acceso en una línea
-- **Búsqueda de archivos** - `!SEARCH` para encontrar archivos por patrón y tamaño
-- **Descargas en lote** - Descarga múltiples archivos con `GET archivo1 archivo2 archivo3`
-- **Barra de progreso** - Feedback visual durante las transferencias
-- **Monitorización de conexión** - Detección automática de timeouts y desconexiones
-- **Historial de comandos** - Navega comandos anteriores con flechas ARRIBA/ABAJO
-- **Operaciones cancelables** - Pulsa EDIT para abortar cualquier operación
-
-## Requisitos
-
-### Hardware
-- ZX Spectrum (48K/128K/+2/+3)
-- divMMC o interfaz compatible con esxDOS
-- Módulo WiFi ESP8266 o ESP-12 conectado al chip AY
-- Tarjeta SD con esxDOS
-
-### Software
-- esxDOS 0.8.x o superior
-- Red WiFi preconfigurada en el módulo ESP (usa [NetManZX](https://github.com/imnacio/netmanzx) o similar)
-
-## Instalación
-
-1. Copia `BitStream.tap` a tu tarjeta SD
-2. Carga con `LOAD ""`
-3. O copia el binario compilado para ejecutar directamente desde esxDOS
-
-## Inicio Rápido
-
-```
-!CONNECT ftp.ejemplo.com/pub/spectrum anonymous
-LS
-CD games
-GET juego.tap
-QUIT
-```
-
-## Comandos
-
-### Comandos FTP Estándar
-
-| Comando | Descripción | Ejemplo |
-|---------|-------------|---------|
-| `OPEN host [puerto]` | Conectar a servidor FTP | `OPEN ftp.scene.org` |
-| `USER nombre [pass]` | Login con credenciales | `USER anonymous` |
-| `PWD` | Mostrar directorio actual | `PWD` |
-| `CD ruta` | Cambiar directorio | `CD /pub/games` |
-| `LS [filtro]` | Listar contenido | `LS *.tap` |
-| `GET archivo [...]` | Descargar archivo(s) | `GET juego.tap` |
-| `QUIT` | Desconectar del servidor | `QUIT` |
-
-### Comandos Especiales
-
-| Comando | Descripción | Ejemplo |
-|---------|-------------|---------|
-| `!CONNECT` | Conexión rápida con ruta | `!CONNECT ftp.site.com/ruta user pass` |
-| `!STATUS` | Mostrar estado de conexión | `!STATUS` |
-| `!SEARCH [patrón] [>tamaño]` | Buscar archivos | `!SEARCH *.sna >16000` |
-| `!INIT` | Re-inicializar módulo WiFi | `!INIT` |
-| `!DEBUG` | Alternar modo debug | `!DEBUG` |
-| `HELP` | Mostrar comandos estándar | `HELP` |
-| `!HELP` | Mostrar comandos especiales | `!HELP` |
-| `CLS` | Limpiar pantalla | `CLS` |
-| `ABOUT` | Mostrar info de versión | `ABOUT` |
-
-### Navegación
-
-- **ARRIBA/ABAJO** - Historial de comandos
-- **IZQUIERDA/DERECHA** - Mover cursor en línea de entrada
-- **EDIT** - Cancelar operación actual
-- **ENTER** - Ejecutar comando
-
-## Búsqueda de Archivos
-
-El comando `!SEARCH` permite filtrar por patrón de nombre y tamaño mínimo:
-
-```
-!SEARCH *.tap          # Buscar todos los .tap
-!SEARCH game           # Buscar archivos que contengan "game"
-!SEARCH *.sna >48000   # Buscar .sna mayores de 48KB
-!SEARCH >16384         # Buscar cualquier archivo mayor de 16KB
-```
-
-## Barra de Estado
-
-La barra de estado inferior muestra:
-- **Host** - Servidor conectado (o "---" si desconectado)
-- **User** - Nombre de usuario logueado
-- **Path** - Directorio remoto actual
-- **Indicador** - Estado de conexión (verde=logueado, amarillo=conectado, rojo=desconectado)
-
-## Solución de Problemas
-
-### "No WiFi" al iniciar
-- Asegúrate de que el módulo ESP está bien conectado
-- Verifica que el WiFi está configurado (usa NetManZX primero)
-- Prueba `!INIT` para re-inicializar
-
-### Timeouts de conexión
-- El servidor puede tener timeout por inactividad; reconecta con `!CONNECT`
-- Comprueba la intensidad de señal WiFi
-- Algunos servidores limitan conexiones anónimas
-
-### Errores de transferencia
-- Asegúrate de tener espacio suficiente en la SD
-- Archivos grandes pueden dar timeout en conexiones lentas
-- Usa `!STATUS` para verificar que la conexión está activa
-
-### Comandos que no responden
-- Pulsa EDIT para cancelar operaciones bloqueadas
-- Prueba `!INIT` para resetear el estado del módulo
-
-## Detalles Técnicos
-
-- **Velocidad**: 9600 bps (AY-UART bit-banging)
-- **Protocolo**: FTP modo pasivo
-- **Pantalla**: Modo texto 64 columnas (fuente 4x8 píxeles)
-- **Buffer**: Buffer circular de 256 bytes para UART
-- **Timeouts**: Basados en frames (50Hz) para timing preciso
-
-## Compilar desde Fuentes
-
-Requiere compilador z88dk:
-
-```bash
-zcc +zx -vn -SO3 -startup=0 -clib=new -zorg=24576 \
-    -pragma-define:CLIB_MALLOC_HEAP_SIZE=0 \
-    -pragma-define:CLIB_STDIO_HEAP_SIZE=0 \
-    -pragma-define:CRT_STACK_SIZE=512 \
-    bitstream.c ay_uart.asm -o BitStream -create-app
-```
-
-## Créditos
-
-- **Código**: M. Ignacio Monge Garcia
-- **Driver AY-UART**: Basado en código de A. Nihirash
-- **Fuente**: Fuente 4x8 de 64 columnas de fuentes comunes ZX
-
-## Licencia
-
-Este proyecto se distribuye bajo licencia MIT. Ver [LICENSE](LICENSE) para más detalles.
-
-## Enlaces
-
-- [NetManZX](https://github.com/imnacio/netmanzx) - Gestor de redes WiFi para ZX Spectrum
-- [esxDOS](http://esxdos.org) - DOS para interfaces divMMC
-- [z88dk](https://github.com/z88dk/z88dk) - Kit de desarrollo Z80
+Cliente FTP completo con conectividad WiFi ESP8266/ESP-12 y interfaz de 64 columnas.
 
 ---
 
-*BitStream v1.0 - (C) 2025 M. Ignacio Monge Garcia*
+## Características
+
+### Conectividad
+- **WiFi ESP8266/ESP-12** vía AY-UART bit-banging a 9600 baudios
+- **Ring buffer de 512 bytes** para manejo eficiente de datos
+- **Monitoreo automático** de conexión en tiempo real
+- **Detección de desconexión** (timeout, cierre remoto)
+
+### Protocolo FTP
+- **OPEN** - Conectar a servidor FTP
+- **USER** - Login con usuario/password
+- **PWD** - Mostrar directorio actual (con retry automático)
+- **LS** / **LIST** - Listar archivos y directorios
+- **CD** - Cambiar directorio
+- **GET** - Descargar archivos (soporte batch y comillas)
+- **PUT** - Subir archivos al servidor
+- **QUIT** - Cerrar conexión
+
+### Interfaz de Usuario
+- **64 columnas** con fuente custom de 4x8 píxeles
+- **Rendering optimizado** con fast-path para líneas completas
+- **Historial de comandos** (↑/↓ para navegar)
+- **Indicadores visuales** de estado WiFi/FTP
+- **Barra de estado** permanente
+- **Cancelación** con tecla EDIT
+
+### Transferencias
+- **Descarga múltiple**: `GET file1.txt file2.zip file3.rar`
+- **Nombres con espacios**: `GET "Manual del Usuario.pdf"`
+- **Barra de progreso** en tiempo real
+- **Estadísticas**: velocidad, tiempo, bytes transferidos
+- **Reintentos automáticos** en caso de error
+
+---
+
+## Requisitos Hardware
+
+1. **ZX Spectrum 48K/128K**
+2. **Interfaz AY-3-8912**
+3. **Módulo WiFi ESP8266 o ESP-12**
+   - Conectado a pines AY (UART bit-banging)
+   - Configurado a 9600 baudios
+
+---
+
+## Comandos Rápidos
+
+### Conexión Rápida
+```
+!CONNECT ftp.servidor.com/path usuario password
+```
+Conecta, logea y cambia al directorio en un solo comando.
+
+### Comandos Especiales
+```
+!HELP      Ayuda sobre comandos especiales
+HELP       Ayuda sobre comandos FTP estándar
+STATUS     Estado de conexión WiFi/FTP
+ABOUT      Información del programa
+CLS        Limpiar pantalla
+```
+
+### Ejemplos de Uso
+```
+OPEN ftp.gnu.org
+USER anonymous zx@spectrum.net
+CD /gnu/gcc
+LS
+GET "gcc manual.pdf"
+QUIT
+```
+
+---
+
+## Novedades v1.1
+
+### ✨ Mejoras de Rendimiento
+- Ring buffer ampliado (256→512 bytes)
+- Rendering 3-4x más rápido en líneas completas
+- Teclado más responsive (40ms vs 120ms anteriores)
+
+### 🎯 Nuevas Características
+- Soporte de comillas en nombres de archivo
+- Detección de sesión ya iniciada (USER)
+- PWD con retry automático (8s timeout)
+
+### 🐛 Correcciones
+- Connection alive detection mejorada
+- Parsing robusto de argumentos
+- ~135 bytes de código optimizado
+
+---
+
+## Compilación
+
+### Requisitos
+- **Z88DK** (zcc)
+- **Make** (opcional, se puede usar batch)
+
+### Build
+```bash
+make
+```
+
+O usando el script batch:
+```batch
+build.bat
+```
+
+Genera **BitStream.tap** (~40KB)
+
+---
+
+## Configuración ESP8266
+
+El módulo ESP debe estar configurado:
+- **Baud rate**: 9600
+- **Modo multi-conexión**: Habilitado (AT+CIPMUX=1)
+- **Conectado a red WiFi**
+
+BitStream incluye inicialización automática inteligente.
+
+---
+
+## Notas Técnicas
+
+### Memoria
+- **Código**: ~40KB compilado
+- **Ring buffer**: 512 bytes
+- **Buffers FTP**: ~2KB (comandos, respuestas, datos)
+- **Compatible**: 48K y 128K (código en memoria principal)
+
+### Arquitectura
+- **UART bit-banging** vía registros AY-3-8912
+- **Rendering 64 columnas** optimizado con fast-path
+- **Ring buffer circular** para recepción UART
+- **Buffering de escritura** para transferencias rápidas
+
+### Limitaciones
+- Modo pasivo FTP únicamente (PASV)
+- Nombres 8.3 en archivos locales (esxDOS)
+- Sin soporte SSL/TLS (FTP plain)
+
+---
+
+## Créditos
+
+**Autor**: M. Ignacio Monge García  
+**Año**: 2025  
+**Licencia**: [Especificar]
+
+Basado en:
+- **espATZX** (WiFi UART)
+- **Z88DK** (compilador)
+- **esxDOS** (sistema de archivos)
+
+---
+
+## Soporte
+
+Para bugs, sugerencias o contribuciones:
+[Incluir contacto/repositorio]
+
+---
+
+[🇬🇧 Read in English](README.md)

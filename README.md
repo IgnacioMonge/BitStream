@@ -1,166 +1,180 @@
 ![BitStream Banner](images/bitstream-logo-white.png)
 
-# BitStream v1.0
 
-**FTP Client for ZX Spectrum**
+# BitStream
+## FTP Client for ZX Spectrum
 
-BitStream is a fully-featured FTP client for the ZX Spectrum, enabling file downloads from FTP servers over WiFi using an ESP8266/ESP-12 module connected via AY-UART bit-banging at 9600 baud.
+[🇪🇸 Versión en Español](READMEsp.md)
 
-![BitStream Screenshot](screenshot.png)
-
-> 🇪🇸 **[Leer en Español](READMEsp.md)**
-
-## Features
-
-- **64-column display** - Clean, readable interface with color-coded output
-- **Standard FTP commands** - OPEN, USER, PWD, CD, LS, GET, QUIT
-- **Quick connect** - `!CONNECT host/path user [pass]` for one-line server access
-- **File search** - `!SEARCH` to find files by pattern and minimum size
-- **Batch downloads** - Download multiple files with `GET file1 file2 file3`
-- **Progress bar** - Visual feedback during file transfers
-- **Connection monitoring** - Automatic detection of timeouts and disconnections
-- **Command history** - Navigate previous commands with UP/DOWN arrows
-- **Cancellable operations** - Press EDIT key to abort any operation
-
-## Requirements
-
-### Hardware
-- ZX Spectrum (48K/128K/+2/+3)
-- divMMC or similar esxDOS-compatible interface
-- ESP8266 or ESP-12 WiFi module connected to AY chip
-- SD card with esxDOS
-
-### Software
-- esxDOS 0.8.x or higher
-- WiFi network pre-configured on ESP module (use [NetManZX](https://github.com/imnacio/netmanzx) or similar)
-
-## Installation
-
-1. Copy `BitStream.tap` to your SD card
-2. Load with `LOAD ""`
-3. Or copy the compiled binary to run directly from esxDOS
-
-## Quick Start
-
-```
-!CONNECT ftp.example.com/pub/spectrum anonymous
-LS
-CD games
-GET game.tap
-QUIT
-```
-
-## Commands
-
-### Standard FTP Commands
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `OPEN host [port]` | Connect to FTP server | `OPEN ftp.scene.org` |
-| `USER name [pass]` | Login with credentials | `USER anonymous` |
-| `PWD` | Show current directory | `PWD` |
-| `CD path` | Change directory | `CD /pub/games` |
-| `LS [filter]` | List directory contents | `LS *.tap` |
-| `GET file [...]` | Download file(s) | `GET game.tap` |
-| `QUIT` | Disconnect from server | `QUIT` |
-
-### Special Commands
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `!CONNECT` | Quick connect with path | `!CONNECT ftp.site.com/path user pass` |
-| `!STATUS` | Show connection status | `!STATUS` |
-| `!SEARCH [pattern] [>size]` | Search files | `!SEARCH *.sna >16000` |
-| `!INIT` | Re-initialize WiFi module | `!INIT` |
-| `!DEBUG` | Toggle debug mode | `!DEBUG` |
-| `HELP` | Show standard commands | `HELP` |
-| `!HELP` | Show special commands | `!HELP` |
-| `CLS` | Clear screen | `CLS` |
-| `ABOUT` | Show version info | `ABOUT` |
-
-### Navigation
-
-- **UP/DOWN** - Command history
-- **LEFT/RIGHT** - Move cursor in input line
-- **EDIT** - Cancel current operation
-- **ENTER** - Execute command
-
-## File Search
-
-The `!SEARCH` command allows filtering by name pattern and minimum file size:
-
-```
-!SEARCH *.tap          # Find all .tap files
-!SEARCH game           # Find files containing "game"
-!SEARCH *.sna >48000   # Find .sna files larger than 48KB
-!SEARCH >16384         # Find any file larger than 16KB
-```
-
-## Status Bar
-
-The bottom status bar shows:
-- **Host** - Connected server (or "---" if disconnected)
-- **User** - Logged in username
-- **Path** - Current remote directory
-- **Indicator** - Connection state (green=logged in, yellow=connected, red=disconnected)
-
-## Troubleshooting
-
-### "No WiFi" on startup
-- Ensure ESP module is properly connected
-- Check WiFi is configured (use NetManZX first)
-- Try `!INIT` to re-initialize
-
-### Connection timeouts
-- Server may have idle timeout; reconnect with `!CONNECT`
-- Check WiFi signal strength
-- Some servers limit anonymous connections
-
-### Transfer errors
-- Ensure sufficient space on SD card
-- Large files may timeout on slow connections
-- Use `!STATUS` to verify connection is alive
-
-### Commands not responding
-- Press EDIT to cancel stuck operations
-- Try `!INIT` to reset module state
-
-## Technical Details
-
-- **Baud rate**: 9600 bps (AY-UART bit-banging)
-- **Protocol**: FTP passive mode
-- **Display**: 64-column text mode (4x8 pixel font)
-- **Buffer**: 256-byte ring buffer for UART
-- **Timeouts**: Frame-based (50Hz) for accurate timing
-
-## Building from Source
-
-Requires z88dk compiler:
-
-```bash
-zcc +zx -vn -SO3 -startup=0 -clib=new -zorg=24576 \
-    -pragma-define:CLIB_MALLOC_HEAP_SIZE=0 \
-    -pragma-define:CLIB_STDIO_HEAP_SIZE=0 \
-    -pragma-define:CRT_STACK_SIZE=512 \
-    bitstream.c ay_uart.asm -o BitStream -create-app
-```
-
-## Credits
-
-- **Code**: M. Ignacio Monge Garcia
-- **AY-UART driver**: Based on code by A. Nihirash
-- **Font**: 4x8 64-column font from common ZX sources
-
-## License
-
-This project is released under the MIT License. See [LICENSE](LICENSE) for details.
-
-## Links
-
-- [NetManZX](https://github.com/imnacio/netmanzx) - WiFi network manager for ZX Spectrum
-- [esxDOS](http://esxdos.org) - DOS for divMMC interfaces
-- [z88dk](https://github.com/z88dk/z88dk) - Z80 development kit
+Full-featured FTP client with ESP8266/ESP-12 WiFi connectivity and 64-column interface.
 
 ---
 
-*BitStream v1.0 - (C) 2025 M. Ignacio Monge Garcia*
+## Features
+
+### Connectivity
+- **WiFi ESP8266/ESP-12** via AY-UART bit-banging at 9600 baud
+- **512-byte ring buffer** for efficient data handling
+- **Automatic connection monitoring** in real-time
+- **Disconnect detection** (timeout, remote close)
+
+### FTP Protocol
+- **OPEN** - Connect to FTP server
+- **USER** - Login with username/password
+- **PWD** - Show current directory (with automatic retry)
+- **LS** / **LIST** - List files and directories
+- **CD** - Change directory
+- **GET** - Download files (batch support and quotes)
+- **PUT** - Upload files to server
+- **QUIT** - Close connection
+
+### User Interface
+- **64 columns** with custom 4x8 pixel font
+- **Optimized rendering** with fast-path for full lines
+- **Command history** (↑/↓ to navigate)
+- **Visual indicators** for WiFi/FTP status
+- **Permanent status bar**
+- **Cancellation** with EDIT key
+
+### File Transfers
+- **Multiple downloads**: `GET file1.txt file2.zip file3.rar`
+- **Filenames with spaces**: `GET "User Manual.pdf"`
+- **Progress bar** in real-time
+- **Statistics**: speed, time, bytes transferred
+- **Automatic retries** on error
+
+---
+
+![BitStream Banner](images/BTS1.png)
+
+## Hardware Requirements
+
+1. **ZX Spectrum 48K/128K**
+2. **AY-3-8912 interface**
+3. **ESP8266 or ESP-12 WiFi module**
+   - Connected to AY pins (UART bit-banging)
+   - Configured at 9600 baud
+
+---
+
+## Quick Commands
+
+### Quick Connect
+```
+!CONNECT ftp.server.com/path username password
+```
+Connects, logs in, and changes directory in a single command.
+
+### Special Commands
+```
+!HELP      Help on special commands
+HELP       Help on standard FTP commands
+STATUS     WiFi/FTP connection status
+ABOUT      Program information
+CLS        Clear screen
+```
+
+### Usage Examples
+```
+OPEN ftp.gnu.org
+USER anonymous zx@spectrum.net
+CD /gnu/gcc
+LS
+GET "gcc manual.pdf"
+QUIT
+```
+
+---
+
+## What's New in v1.1
+
+### ✨ Performance Improvements
+- Ring buffer expanded (256→512 bytes)
+- 3-4x faster rendering on full lines
+- More responsive keyboard (40ms vs 120ms previously)
+
+### 🎯 New Features
+- Quote support in filenames
+- Already-logged-in detection (USER)
+- PWD with automatic retry (8s timeout)
+
+### 🐛 Bug Fixes
+- Improved connection alive detection
+- Robust argument parsing
+- ~135 bytes of code optimized
+
+---
+
+## Compilation
+
+### Requirements
+- **Z88DK** (zcc)
+- **Make** (optional, batch script available)
+
+### Build
+```bash
+make
+```
+
+Or using batch script:
+```batch
+build.bat
+```
+
+Generates **BitStream.tap** (~40KB)
+
+---
+
+## ESP8266 Configuration
+
+The ESP module must be configured with:
+- **Baud rate**: 9600
+- **Multi-connection mode**: Enabled (AT+CIPMUX=1)
+- **Connected to WiFi network**
+
+BitStream includes smart automatic initialization.
+
+---
+
+## Technical Notes
+
+### Memory
+- **Code**: ~40KB compiled
+- **Ring buffer**: 512 bytes
+- **FTP buffers**: ~2KB (commands, responses, data)
+- **Compatible**: 48K and 128K (code in main memory)
+
+### Architecture
+- **UART bit-banging** via AY-3-8912 registers
+- **64-column rendering** optimized with fast-path
+- **Circular ring buffer** for UART reception
+- **Write buffering** for fast transfers
+
+### Limitations
+- Passive FTP mode only (PASV)
+- 8.3 filenames for local files (esxDOS)
+- No SSL/TLS support (plain FTP)
+
+---
+
+## Credits
+
+**Author**: M. Ignacio Monge García  
+**Year**: 2025  
+**License**: [To specify]
+
+Based on:
+- **espATZX** (WiFi UART)
+- **Z88DK** (compiler)
+- **esxDOS** (filesystem)
+
+---
+
+## Support
+
+For bugs, suggestions or contributions:
+[Include contact/repository]
+
+---
+
+[🇪🇸 Leer en Español](READMEsp.md)

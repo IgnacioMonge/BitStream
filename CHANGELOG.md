@@ -4,7 +4,124 @@ All notable changes to BitStream are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [1.0.0] - 2025-01-03
+
+
+## [1.1.0] - 2026-01-09
+
+### Mejoras de UART y Conectividad
+- **Ring buffer ampliado**: 256 → 512 bytes
+  - Mejor manejo de ráfagas de datos del ESP
+  - Reduce pérdida de caracteres en transferencias
+- **Driver UART optimizado**:
+  - Eliminado bug crítico con instrucción `exx`
+  - `send_block` optimizado para transferencias más rápidas
+  - Nueva función `ready_fast` para polling eficiente
+- **Detección de timeout mejorada**:
+  - Fix crítico: mensajes 421 (timeout FTP) ahora detectados correctamente
+  - Problema: consumo agresivo de ring buffer durante parsing de IP WiFi
+  - Solución: drenado selectivo y timing ajustado
+
+### Protocolo FTP y Comandos
+- **PWD robusto**: 
+  - Timeout ampliado: 4s → 8s para servidores lentos
+  - Retry automático tras primer intento fallido
+  - Función `cmd_pwd_silent()` para uso interno
+- **LIST/NLST mejorado**:
+  - Espera explícita de respuesta "150" antes de abrir data port
+  - Parsing IPD más robusto ante respuestas fragmentadas
+  - Manejo de listados consecutivos sin fallos
+  - Listado con nombre de ficheros largos mejorado.
+- **GET con soporte de comillas**:
+  - Sintaxis: `GET "Manual del Usuario.pdf"`
+  - Parsing robusto de argumentos con espacios
+  - Mantiene compatibilidad con nombres sin espacios
+- **USER con detección de sesión**:
+  - Avisa si ya existe sesión activa
+  - Previene intentos de re-login accidentales
+
+### Interfaz de Usuario
+- **Renderizado optimizado**:
+  - `print_line64_fast`: 3-4x más rápido en líneas completas
+  - Fast-path activado cuando: inicio de línea + texto cabe en 64 cols
+  - Mejora notable en listados largos y mensajes de servidor
+- **Líneas horizontales de 1 pixel**:
+  - Headers en LS/LIST con línea superior eliminada
+  - Separadores visuales con scanline 1 (más fino)
+  - Corrección de posicionamiento (row vs scanline)
+- **Mejoras de login UX**:
+  - Flujo de mensajes más claro durante autenticación
+  - Estados visuales mejor definidos
+  - Feedback inmediato en cada paso
+- **Comandos HELP/ABOUT**:
+  - Formato mejorado y más legible
+  - Información organizada por categorías
+  - Ejemplos de uso añadidos
+- **Barra de estado**:
+  - Repintado optimizado (solo cuando cambia)
+  - Indicadores WiFi/FTP más precisos
+  - Evita parpadeo innecesario
+
+### Optimización de Código
+- **Reducción de tamaño (~1.2KB total)**:
+  - Strings compartidos: ~709 bytes
+    - Constantes S_IPD0, S_CRLF, S_CANCEL, S_DOTS, etc.
+    - Mensajes de error unificados
+  - Dead code eliminado: ~430 bytes
+    - Funciones no utilizadas removidas
+    - Código inalcanzable limpiado
+  - Refactorización `fail()` helper: ~175 bytes
+    - Error handling sistemático
+    - Reduce duplicación de código
+  - `format_size` simplificado: ~70 bytes
+    - Lógica de formateo más directa
+  - Constantes adicionales: ~135 bytes
+    - S_CHECKING, S_AT_CIPMUX añadidas
+    - Eliminación de función `draw_fullwidth_hline`
+- **Mejoras estructurales**:
+  - Helper functions mejor organizadas
+  - Código más mantenible y legible
+  - Menor footprint de stack
+
+### Teclado y Entrada
+- **Timers optimizados**:
+  - Teclas normales: delay reducido 120ms → 40ms
+  - BACKSPACE/cursores: delay inicial 100ms → 60ms
+  - Repetición: 40ms → 20ms (más rápida)
+- **Mejor respuesta**:
+  - Captura correcta de pulsaciones rápidas
+  - Ideal para mecanógrafos experimentados
+  - Navegación más ágil en historial
+
+### Soporte UTF-8 y Encoding
+- **Escape sequences UTF-8**:
+  - Conversión de secuencias %XX a caracteres
+  - Ejemplos: %C3%AD → í, %C3%B1 → ñ
+  - Mejora legibilidad en nombres con acentos
+- **Parsing robusto**:
+  - Manejo de tokens con comillas
+  - Soporte de caracteres especiales
+  - Compatible con rutas internacionales
+
+### Monitoreo y Estabilidad
+- **Connection alive detection**:
+  - Detección de cierre remoto (0,CLOSED)
+  - Detección de mensajes 421 (timeout)
+  - Limpieza automática de estado FTP
+- **Manejo de errores**:
+  - Uso sistemático de `fail()` en toda la codebase
+  - Mensajes de error consistentes y claros
+  - Recovery automático tras fallos
+
+### Debug y Diagnóstico
+- **Modo debug mejorado**:
+  - Fix: STATUS no cuelga en debug mode
+  - Output más limpio y legible
+  - Mejor sincronización con frames
+
+---
+
+
+## [1.0.0] - 2025-25-12
 
 ### Added
 - Initial public release
@@ -96,3 +213,6 @@ This project uses [Semantic Versioning](https://semver.org/):
 - PATCH: Bug fixes, backward compatible
 
 [1.0.0]: https://github.com/imnacio/bitstream/releases/tag/v1.0.0
+
+
+

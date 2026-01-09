@@ -11,6 +11,7 @@
     PUBLIC _ay_uart_send_block
     PUBLIC _ay_uart_read
     PUBLIC _ay_uart_ready
+    PUBLIC _ay_uart_ready_fast
 
 ;; ============================================================
 ;; DATA SEQUENCE FOR SPEED INITIALIZATION
@@ -202,7 +203,7 @@ transmitNext:
     rra                     ; Rotate right through carry
     djnz transmitBit
     
-    exx
+    ; exx removed - was leaving alternate register bank active
     ei
     
     pop af
@@ -237,33 +238,31 @@ _ay_uart_send_block:
     
     ; HL = buffer, DE = remaining count
     
+    ; === OPTIMIZATION: Initialize constants ONCE ===
+    ; Select AY's PORT A (only once for entire block)
+    ld bc, 0xFFFD
+    ld a, 0x0E
+    out (c), a
+    
+    ; Calculate baud delay once: IX = baud - 2
+    push hl                 ; Save buffer pointer temporarily
+    ld hl, (_baud)
+    ld bc, 0x0002
+    or a
+    sbc hl, bc
+    push hl
+    pop ix                  ; IX = baud - 2 (constant for loop)
+    pop hl                  ; Restore buffer pointer
+    ; === End optimization setup ===
+    
 sendBlockLoop:
     push de                 ; Save remaining count
     push hl                 ; Save buffer pointer
     
     ld a, (hl)              ; Get byte to send
     
-    ; === Core transmit (from _ay_uart_send) ===
-    push af                 ; Save byte
-    
-    ld c, 0xFD
-    ld d, 0xFF
-    ld e, 0xBF
-    ld b, d
-    
-    ld a, 0x0E
-    out (c), a              ; Select AY's PORT A
-    
-    ld hl, (_baud)
-    push de
-    ld de, 0x0002
-    or a
-    sbc hl, de
-    pop de
-    ex de, hl               ; DE = baud - 2
-    
-    pop af                  ; Get byte back
-    cpl                     ; Complement it
+    ; === Core transmit (optimized) ===
+    cpl                     ; Complement byte
     scf                     ; Set carry for start bit
     ld b, 11                ; 1 start + 8 data + 2 stop bits
     
@@ -272,8 +271,8 @@ sendBlockBit:
     push af
     
     ld a, 0xFE
-    ld h, d
-    ld l, e
+    push ix
+    pop hl                  ; HL = baud - 2 (from IX)
     ld bc, 0xBFFD
     jp nc, sendBlockOne
     
@@ -350,6 +349,37 @@ checkPortReady:
     ret
     
 notReadyRet:
+    ld l, 0
+    ret
+
+;; ============================================================
+;; ay_uart_ready_fast - Check if data available (FAST VERSION)
+;; ASSUMES: AY register 0x0E (PORT A) is already selected
+;; Output: L = 1 if ready, 0 if not
+;; Optimization: Saves ~8 cycles by skipping register selection
+;; USE ONLY in contexts where PORT A is guaranteed to be selected
+;; ============================================================
+_ay_uart_ready_fast:
+    ; Check cached byte first
+    ld a, (_isSecondByteAvail)
+    or a
+    jr z, checkPortReadyFast
+    ld l, 1
+    ret
+    
+checkPortReadyFast:
+    ; ASSUMES reg 0x0E already selected - skip out (0xFFFD), 0x0E
+    ; Read port directly
+    ld bc, 0xBFFD
+    in a, (c)
+    
+    ; RX is bit 7, start bit = 0
+    and 0x80
+    jr nz, notReadyRetFast
+    ld l, 1                 ; Start bit detected
+    ret
+    
+notReadyRetFast:
     ld l, 0
     ret
 
