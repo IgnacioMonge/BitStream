@@ -20,7 +20,7 @@ BitStream is a fully-featured FTP client for the ZX Spectrum, enabling file down
 - **Command history** - Navigate previous commands with UP/DOWN arrows
 - **Cancellable operations** - Press EDIT key to abort any operation
 
-![BitStream Image1](images/BTS1.png)
+![BitStream Image1](images/BTS1.png | width=100)
 
 ## Requirements
 
