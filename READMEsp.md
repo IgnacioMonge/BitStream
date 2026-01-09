@@ -21,7 +21,8 @@ BitStream es un cliente FTP completo para ZX Spectrum que permite descargar arch
 - **Historial de comandos** - Navega comandos anteriores con flechas ARRIBA/ABAJO
 - **Operaciones cancelables** - Pulsa EDIT para abortar cualquier operación
 
-![BitStream 1](images/BTS1_1.png) ![BitStream 2](images/BTS2_1.png) ![BitStream 1](images/BTS3_1.png)
+[![BitStream1](images/BTS1_1.png)](images/BTS1.png) [![BitStream2](images/BTS2_1.png)](images/BTS2.png) [![BitStream3](images/BTS3_1.png)](images/BTS3.png)
+
 
 ## Requisitos
 
@@ -97,7 +98,7 @@ El comando `!SEARCH` permite filtrar por patrón de nombre y tamaño mínimo:
 !SEARCH >16384         # Buscar cualquier archivo mayor de 16KB
 ```
 
-![BitStream 4](images/BTS4_1.png) ![BitStream 5](images/BTS5_1.png) ![BitStream 6](images/BTS6_1.png)
+[![BitStream4](images/BTS4_1.png)](images/BTS4.png) [![BitStream5](images/BTS5_1.png)](images/BTS5.png) [![BitStream6](images/BTS6_1.png)](images/BTS6.png)
 
 ## Barra de Estado
 
