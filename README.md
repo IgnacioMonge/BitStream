@@ -167,4 +167,4 @@ This project is released under the MIT License. See [LICENSE](LICENSE) for detai
 
 ---
 
-*BitStream v1.0 - (C) 2025 M. Ignacio Monge Garcia*
+*BitStream - (C) 2026 M. Ignacio Monge Garcia*
