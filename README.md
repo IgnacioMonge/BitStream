@@ -104,6 +104,9 @@ The bottom status bar shows:
 - **Path** - Current remote directory
 - **Indicator** - Connection state (green=logged in, yellow=connected, red=disconnected)
 
+![BitStream 4](images/BTS4_1.png) ![BitStream 5](images/BTS5_1.png) ![BitStream 1](images/BTS6_1.png)
+
+
 ## Troubleshooting
 
 ### "No WiFi" on startup
