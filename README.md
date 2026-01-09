@@ -1,6 +1,5 @@
 ![BitStream Banner](images/bitstream-logo-white.png)
 
-# BitStream v1.0
 
 **FTP Client for ZX Spectrum**
 
@@ -20,6 +19,8 @@ BitStream is a fully-featured FTP client for the ZX Spectrum, enabling file down
 - **Connection monitoring** - Automatic detection of timeouts and disconnections
 - **Command history** - Navigate previous commands with UP/DOWN arrows
 - **Cancellable operations** - Press EDIT key to abort any operation
+
+![BitStream Image1](images/BTS1.png)
 
 ## Requirements
 
