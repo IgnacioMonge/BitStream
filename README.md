@@ -20,7 +20,7 @@ BitStream is a fully-featured FTP client for the ZX Spectrum, enabling file down
 - **Command history** - Navigate previous commands with UP/DOWN arrows
 - **Cancellable operations** - Press EDIT key to abort any operation
 
-[![BitStream1](images/BTS1_1png)](images/BTS1.png) [![BitStream2](images/BTS2_1png)](images/BTS2.png) [![BitStream3](images/BTS3_1png)](images/BTS3.png)
+[![BitStream1](images/BTS1_1.png)](images/BTS1.png) [![BitStream2](images/BTS2_1.png)](images/BTS2.png) [![BitStream3](images/BTS3_1.png)](images/BTS3.png)
 
 
 ## Requirements
@@ -105,7 +105,7 @@ The bottom status bar shows:
 - **Path** - Current remote directory
 - **Indicator** - Connection state (green=logged in, yellow=connected, red=disconnected)
 
-[![BitStream4](images/BTS4_1png)](images/BTS4.png) [![BitStream5](images/BTS5_1png)](images/BTS5.png) [![BitStream6](images/BTS6_1png)](images/BTS6.png)
+[![BitStream4](images/BTS4_1.png)](images/BTS4.png) [![BitStream5](images/BTS5_1.png)](images/BTS5.png) [![BitStream6](images/BTS6_1.png)](images/BTS6.png)
 
 
 ## Troubleshooting
