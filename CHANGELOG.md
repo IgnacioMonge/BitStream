@@ -6,96 +6,143 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
 
+## [1.2.0] - 2026-03-07
+
+### Major: Modular Architecture & ASM Port
+- **Complete rewrite to modular SCU (Single Compilation Unit)**:
+  - 6 modules: globals, ui, comms, ftp, commands, main
+  - Clean separation of concerns with forward declarations
+  - Shared header `bitstream.h` for all constants and externs
+- **Z80 assembly port** of critical routines (`bitstream_asm.asm`):
+  - Screen: `clear_line`, `clear_zone`, `scroll_main_zone` (DI/EI, LDIR)
+  - Ring buffer: `rb_pop`, `rb_push`, `try_read_line_nodrain`
+  - UART: `uart_send_string`, `uart_drain_to_buffer`
+  - String: `str_append`, `char_append`, `str_to_upper`, `skip_ws`, `st_copy_n`
+  - Rendering: `print_str64_char`, `main_putc`, `main_newline`, `main_puts`
+  - Numeric: `u16_to_dec`, `parse_decimal`, `format_83_name`
+- **Compressed font**: 10-byte LUT + 96x3 = 298 bytes (vs 768 uncompressed)
+- **BSS trim**: `__data_compiler_tail` symbol eliminates ~3,763 bytes of zeros from TAP
+
+### Major: Dual UART Support
+- **divMMC/divTiesus UART driver** (`divtiesus_uart.asm`): 115200 baud
+- **AY-3-8912 bit-bang driver** (`ay_uart.asm`): 9600 baud
+- Build system supports both: `make` (divMMC) / `make ay` / `make both`
+- Conditional compilation via `DIVMMC_UART` / `AY_UART` defines
+
+### New Features
+- **Interactive login**: OPEN now prompts for user/password interactively
+  - Masked password input with UP arrow to toggle visibility
+  - Anonymous defaults clearly indicated in prompts
+- **OPEN host:port parsing**: Port number now correctly parsed from host string
+- **!CONNECT with path**: `!CONNECT host/path user pass` navigates to path after login
+- **esxDOS detection at startup**: Safe detection via ERR_SP trick (works on non-divMMC hardware)
+- **Ring buffer expanded**: 256 -> 2048 bytes for reliable high-speed transfers
+
+### Bug Fixes
+- **esxDOS stack bug**: `esx_fopen_write/read`, `esx_opendir` didn't pop filename on GETSETDRV fail
+- **detect_esxdos IX preservation**: sccz80 frame pointer now saved/restored correctly
+- **OPEN ignoring port number**: Was hardcoded to port 21, now parses `host:port`
+- **parse_host_port_path NULL crash**: Added guard for NULL `out_path` parameter
+- **!CONNECT post-login check**: Changed from `==` to `>=` STATE_FTP_CONNECTED
+- **cmd_cd missing drain**: Added `uart_drain_to_buffer()` in wait loop
+- **utf8_to_ascii_inplace**: Fixed crash on truncated UTF-8 sequences
+- **strncpy dependency eliminated**: Replaced with ASM `st_copy_n`
+- **Dead code removed**: `timeout` variable, `transfer_started`, unused BSS arrays
+
+### Improvements
+- **UART**: Ring buffer with 2048B and adaptive drain modes (NORMAL/FAST)
+- **Rendering**: `print_line64_fast` 3-4x faster for full lines
+- **Keyboard**: Faster repeat rates (40ms normal, 20ms repeat)
+- **Status bar**: Repaint only on change, eliminates flicker
+- **Memory**: ORG 24000, 256-byte stack, ~1,070 bytes free margin
+- **Build system**: Full Makefile with CHECK/CLEAN/BUILD/TRIM/INFO pipeline, color output, spinner
+
+### Code Size
+- divMMC TAP: ~36.8 KB
+- AY TAP: ~37.4 KB
+
+---
+
+
 ## [1.1.0] - 2026-01-09
 
 ### Mejoras de UART y Conectividad
-- **Ring buffer ampliado**: 256 → 512 bytes
-  - Mejor manejo de ráfagas de datos del ESP
-  - Reduce pérdida de caracteres en transferencias
+- **Ring buffer ampliado**: 256 -> 512 bytes
+  - Mejor manejo de rafagas de datos del ESP
+  - Reduce perdida de caracteres en transferencias
 - **Driver UART optimizado**:
-  - Eliminado bug crítico con instrucción `exx`
-  - `send_block` optimizado para transferencias más rápidas
-  - Nueva función `ready_fast` para polling eficiente
-- **Detección de timeout mejorada**:
-  - Fix crítico: mensajes 421 (timeout FTP) ahora detectados correctamente
+  - Eliminado bug critico con instruccion `exx`
+  - `send_block` optimizado para transferencias mas rapidas
+  - Nueva funcion `ready_fast` para polling eficiente
+- **Deteccion de timeout mejorada**:
+  - Fix critico: mensajes 421 (timeout FTP) ahora detectados correctamente
   - Problema: consumo agresivo de ring buffer durante parsing de IP WiFi
-  - Solución: drenado selectivo y timing ajustado
+  - Solucion: drenado selectivo y timing ajustado
 
 ### Protocolo FTP y Comandos
-- **PWD robusto**: 
-  - Timeout ampliado: 4s → 8s para servidores lentos
-  - Retry automático tras primer intento fallido
-  - Función `cmd_pwd_silent()` para uso interno
+- **PWD robusto**:
+  - Timeout ampliado: 4s -> 8s para servidores lentos
+  - Retry automatico tras primer intento fallido
+  - Funcion `cmd_pwd_silent()` para uso interno
 - **LIST/NLST mejorado**:
-  - Espera explícita de respuesta "150" antes de abrir data port
-  - Parsing IPD más robusto ante respuestas fragmentadas
+  - Espera explicita de respuesta "150" antes de abrir data port
+  - Parsing IPD mas robusto ante respuestas fragmentadas
   - Manejo de listados consecutivos sin fallos
-  - Listado con nombre de ficheros largos mejorado.
+  - Listado con nombre de ficheros largos mejorado
 - **GET con soporte de comillas**:
   - Sintaxis: `GET "Manual del Usuario.pdf"`
   - Parsing robusto de argumentos con espacios
   - Mantiene compatibilidad con nombres sin espacios
-- **USER con detección de sesión**:
-  - Avisa si ya existe sesión activa
+- **USER con deteccion de sesion**:
+  - Avisa si ya existe sesion activa
   - Previene intentos de re-login accidentales
 
 ### Interfaz de Usuario
 - **Renderizado optimizado**:
-  - `print_line64_fast`: 3-4x más rápido en líneas completas
-  - Fast-path activado cuando: inicio de línea + texto cabe en 64 cols
+  - `print_line64_fast`: 3-4x mas rapido en lineas completas
+  - Fast-path activado cuando: inicio de linea + texto cabe en 64 cols
   - Mejora notable en listados largos y mensajes de servidor
-- **Líneas horizontales de 1 pixel**:
-  - Headers en LS/LIST con línea superior eliminada
-  - Separadores visuales con scanline 1 (más fino)
-  - Corrección de posicionamiento (row vs scanline)
+- **Lineas horizontales de 1 pixel**:
+  - Headers en LS/LIST con linea superior eliminada
+  - Separadores visuales con scanline 1 (mas fino)
+  - Correccion de posicionamiento (row vs scanline)
 - **Mejoras de login UX**:
-  - Flujo de mensajes más claro durante autenticación
+  - Flujo de mensajes mas claro durante autenticacion
   - Estados visuales mejor definidos
   - Feedback inmediato en cada paso
 - **Comandos HELP/ABOUT**:
-  - Formato mejorado y más legible
-  - Información organizada por categorías
-  - Ejemplos de uso añadidos
+  - Formato mejorado y mas legible
+  - Informacion organizada por categorias
+  - Ejemplos de uso anadidos
 - **Barra de estado**:
   - Repintado optimizado (solo cuando cambia)
-  - Indicadores WiFi/FTP más precisos
+  - Indicadores WiFi/FTP mas precisos
   - Evita parpadeo innecesario
 
-### Optimización de Código
-- **Reducción de tamaño (~1.2KB total)**:
+### Optimizacion de Codigo
+- **Reduccion de tamano (~1.2KB total)**:
   - Strings compartidos: ~709 bytes
-    - Constantes S_IPD0, S_CRLF, S_CANCEL, S_DOTS, etc.
-    - Mensajes de error unificados
   - Dead code eliminado: ~430 bytes
-    - Funciones no utilizadas removidas
-    - Código inalcanzable limpiado
-  - Refactorización `fail()` helper: ~175 bytes
-    - Error handling sistemático
-    - Reduce duplicación de código
+  - Refactorizacion `fail()` helper: ~175 bytes
   - `format_size` simplificado: ~70 bytes
-    - Lógica de formateo más directa
   - Constantes adicionales: ~135 bytes
-    - S_CHECKING, S_AT_CIPMUX añadidas
-    - Eliminación de función `draw_fullwidth_hline`
 - **Mejoras estructurales**:
   - Helper functions mejor organizadas
-  - Código más mantenible y legible
+  - Codigo mas mantenible y legible
   - Menor footprint de stack
 
 ### Teclado y Entrada
 - **Timers optimizados**:
-  - Teclas normales: delay reducido 120ms → 40ms
-  - BACKSPACE/cursores: delay inicial 100ms → 60ms
-  - Repetición: 40ms → 20ms (más rápida)
+  - Teclas normales: delay reducido 120ms -> 40ms
+  - BACKSPACE/cursores: delay inicial 100ms -> 60ms
+  - Repeticion: 40ms -> 20ms (mas rapida)
 - **Mejor respuesta**:
-  - Captura correcta de pulsaciones rápidas
-  - Ideal para mecanógrafos experimentados
-  - Navegación más ágil en historial
+  - Captura correcta de pulsaciones rapidas
+  - Navegacion mas agil en historial
 
 ### Soporte UTF-8 y Encoding
 - **Escape sequences UTF-8**:
-  - Conversión de secuencias %XX a caracteres
-  - Ejemplos: %C3%AD → í, %C3%B1 → ñ
+  - Conversion de secuencias %XX a caracteres
   - Mejora legibilidad en nombres con acentos
 - **Parsing robusto**:
   - Manejo de tokens con comillas
@@ -104,19 +151,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Monitoreo y Estabilidad
 - **Connection alive detection**:
-  - Detección de cierre remoto (0,CLOSED)
-  - Detección de mensajes 421 (timeout)
-  - Limpieza automática de estado FTP
+  - Deteccion de cierre remoto (0,CLOSED)
+  - Deteccion de mensajes 421 (timeout)
+  - Limpieza automatica de estado FTP
 - **Manejo de errores**:
-  - Uso sistemático de `fail()` en toda la codebase
+  - Uso sistematico de `fail()` en toda la codebase
   - Mensajes de error consistentes y claros
-  - Recovery automático tras fallos
+  - Recovery automatico tras fallos
 
-### Debug y Diagnóstico
+### Debug y Diagnostico
 - **Modo debug mejorado**:
   - Fix: STATUS no cuelga en debug mode
-  - Output más limpio y legible
-  - Mejor sincronización con frames
+  - Output mas limpio y legible
+  - Mejor sincronizacion con frames
 
 ---
 
@@ -212,7 +259,6 @@ This project uses [Semantic Versioning](https://semver.org/):
 - MINOR: New features, backward compatible
 - PATCH: Bug fixes, backward compatible
 
-[1.0.0]: https://github.com/imnacio/bitstream/releases/tag/v1.0.0
-
-
-
+[1.2.0]: https://github.com/IgnacioMonge/BitStream/releases/tag/v1.2.0
+[1.1.0]: https://github.com/IgnacioMonge/BitStream/releases/tag/v1.1.0
+[1.0.0]: https://github.com/IgnacioMonge/BitStream/releases/tag/v1.0.0

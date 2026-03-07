@@ -220,9 +220,10 @@ transmitNext:
 ;; ============================================================
 _ay_uart_send_block:
     ; Get parameters from stack (callee convention)
+    ; sccz80 pushes left-to-right: SP+2=len, SP+4=buf
     pop bc                  ; BC = return address
-    pop hl                  ; HL = buf (first param)
-    pop de                  ; DE = len (second param)
+    pop de                  ; DE = len (second arg, pushed last)
+    pop hl                  ; HL = buf (first arg, pushed first)
     push bc                 ; Restore return address
     
     ; Check for zero length
