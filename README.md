@@ -24,7 +24,7 @@ BitStream is a WiFi FTP client for the ZX Spectrum using an ESP8266/ESP-12 modul
 - **Command history and in-line editing** - `UP/DOWN/LEFT/RIGHT/BACKSPACE`
 - **esxDOS integration** - direct SD card writes via RST 0x08 traps
 
-[![BitStream1](images/BTS1_1.png)](images/BTS1.png) [![BitStream2](images/BTS2_1.png)](images/BTS2.png) [![BitStream3](images/BTS3_1.png)](images/BTS3.png)
+[![BitStream1](images/v130-login-thumb.png)](images/v130-login.png) [![BitStream2](images/v130-list-files-thumb.png)](images/v130-list-files.png) [![BitStream3](images/v130-batch-download-thumb.png)](images/v130-batch-download.png)
 
 
 ## Requirements
@@ -115,7 +115,7 @@ LS -f                 # Files only
 
 BitStream also preserves incoming UTF-8 bytes until the final ASCII conversion step, which improves listings for names containing accented or non-ASCII characters.
 
-[![BitStream4](images/BTS4_1.png)](images/BTS4.png) [![BitStream5](images/BTS5_1.png)](images/BTS5.png) [![BitStream6](images/BTS6_1.png)](images/BTS6.png)
+[![BitStream4](images/v130-list-dirs-thumb.png)](images/v130-list-dirs.png) [![BitStream5](images/v130-paged-list-thumb.png)](images/v130-paged-list.png) [![BitStream6](images/v130-help-thumb.png)](images/v130-help.png)
 
 
 ## Status Bar

@@ -25,7 +25,7 @@ BitStream es un cliente FTP por WiFi para ZX Spectrum que utiliza un modulo ESP8
 - **Historial y edicion en linea** - `UP/DOWN/LEFT/RIGHT/BACKSPACE`
 - **Integracion esxDOS** - escritura directa a SD via traps RST 0x08
 
-[![BitStream1](images/BTS1_1.png)](images/BTS1.png) [![BitStream2](images/BTS2_1.png)](images/BTS2.png) [![BitStream3](images/BTS3_1.png)](images/BTS3.png)
+[![BitStream1](images/v130-login-thumb.png)](images/v130-login.png) [![BitStream2](images/v130-list-files-thumb.png)](images/v130-list-files.png) [![BitStream3](images/v130-batch-download-thumb.png)](images/v130-batch-download.png)
 
 
 ## Requisitos
@@ -116,7 +116,7 @@ LS -f                 # Solo archivos
 
 BitStream tambien conserva los bytes UTF-8 entrantes hasta la conversion final a ASCII, lo que mejora los listados de nombres con acentos o caracteres no ASCII.
 
-[![BitStream4](images/BTS4_1.png)](images/BTS4.png) [![BitStream5](images/BTS5_1.png)](images/BTS5.png) [![BitStream6](images/BTS6_1.png)](images/BTS6.png)
+[![BitStream4](images/v130-list-dirs-thumb.png)](images/v130-list-dirs.png) [![BitStream5](images/v130-paged-list-thumb.png)](images/v130-paged-list.png) [![BitStream6](images/v130-help-thumb.png)](images/v130-help.png)
 
 
 ## Barra de Estado
