@@ -6,13 +6,13 @@
 // RING BUFFER
 // ============================================================================
 uint8_t ring_buffer[RING_BUFFER_SIZE];
-uint16_t rb_head = 0;
-uint16_t rb_tail = 0;
+uint16_t rb_head;
+uint16_t rb_tail;
 
 // Line parser state
 char rx_line[128];
-uint8_t rx_pos = 0;
-uint8_t rx_overflow = 0;
+uint8_t rx_pos;
+uint8_t rx_overflow;
 
 uint8_t uart_drain_limit = DRAIN_NORMAL;
 
@@ -41,33 +41,14 @@ static void rb_flush(void)
 // RX STATE MANAGEMENT
 // ============================================================================
 
-static void rx_reset_all(void)
-{
-    uint16_t max_wait = 300;
-    uint16_t max_bytes = 500;
-    while (max_bytes > 0) {
-        if (ay_uart_ready()) {
-            ay_uart_read();
-            max_bytes--;
-            max_wait = 50;
-        } else {
-            if (max_wait == 0) break;
-            max_wait--;
-        }
-    }
-    rb_head = rb_tail = 0;
-    rx_pos = 0;
-    rx_overflow = 0;
-}
-
 // ============================================================================
 // UART LOW LEVEL
 // ============================================================================
 
 static void uart_flush_rx(void)
 {
-    uint16_t max_wait = 500;
-    uint16_t max_bytes = 500;
+    uint8_t max_wait = 255;
+    uint8_t max_bytes = 255;
 
     while (max_bytes > 0) {
         if (ay_uart_ready()) {
@@ -79,6 +60,14 @@ static void uart_flush_rx(void)
             max_wait--;
         }
     }
+}
+
+static void rx_reset_all(void)
+{
+    uart_flush_rx();
+    rb_head = rb_tail = 0;
+    rx_pos = 0;
+    rx_overflow = 0;
 }
 
 static void uart_flush_hard(void)
@@ -93,12 +82,12 @@ static void uart_flush_hard(void)
 // uart_send_string is in asm/bitstream_asm.asm (__z88dk_fastcall)
 extern void uart_send_string(const char *s) __z88dk_fastcall;
 
-static void wait_frames(uint16_t frames)
+static void wait_frames(uint16_t frames) __z88dk_fastcall
 {
     while (frames--) HALT();
 }
 
-static void wait_drain(uint16_t frames)
+static void wait_drain(uint16_t frames) __z88dk_fastcall
 {
     while (frames--) {
         HALT();
@@ -106,7 +95,7 @@ static void wait_drain(uint16_t frames)
     }
 }
 
-static void esp_send_at(const char *cmd)
+static void esp_send_at(const char *cmd) __z88dk_fastcall
 {
     uart_send_string(cmd);
     uart_send_string(S_CRLF);
@@ -133,7 +122,7 @@ static uint8_t wait_for_string(const char *expected, uint16_t max_frames)
     while (frames < max_frames) {
         HALT();
 
-        if (key_edit_down()) {
+        if (key_break_down()) {
             return 0;
         }
 
@@ -145,8 +134,11 @@ static uint8_t wait_for_string(const char *expected, uint16_t max_frames)
             if (rx_line[0] == 'E' && rx_line[1] == 'R' && rx_line[2] == 'R') return 0;
             if (rx_line[0] == 'F' && rx_line[1] == 'A' && rx_line[2] == 'I') return 0;
 
-            if (expected != NULL && strstr(rx_line, expected) != NULL) return 1;
-            if (rx_line[0] == 'O' && rx_line[1] == 'K') return 1;
+            if (expected != NULL) {
+                if (strstr(rx_line, expected) != NULL) return 1;
+            } else if (rx_line[0] == 'O' && rx_line[1] == 'K') {
+                return 1;
+            }
 
             rx_pos = 0;
         }
@@ -165,7 +157,7 @@ static uint8_t wait_for_string(const char *expected, uint16_t max_frames)
 
 static uint8_t check_disconnect_message(void)
 {
-    if (strncmp(rx_line, "0,CLOSED", 8) == 0) {
+    if (strncmp(rx_line, S_0CLOSED, 8) == 0) {
         return 1;
     }
    if (strncmp(rx_line, S_IPD0, 7) == 0) {
@@ -227,7 +219,7 @@ static uint8_t check_wifi_connection(void)
     while (frames < 200 && !found_ip && !got_ok) {
         HALT();
 
-        if (key_edit_down()) {
+        if (key_break_down()) {
             uart_flush_rx();
             return 2;
         }
@@ -297,52 +289,48 @@ static void setup_ftp_mode(void)
     rb_head = rb_tail = 0;
 }
 
+static void status_result(const char *msg, uint8_t attr)
+{
+    main_puts(" ");
+    current_attr = attr;
+    main_print(msg);
+}
+
 static void full_initialization_sequence(void)
 {
     uint8_t i;
 
     current_attr = ATTR_LOCAL;
-    main_puts("Full initialization.");
-    main_newline();
+    main_print("Full initialization.");
 
     setup_ftp_mode();
 
     main_puts("Probing ESP.");
 
     if (!probe_esp()) {
-        main_newline();
-        current_attr = ATTR_ERROR;
-        main_puts("ESP not responding!");
-        main_newline();
+        status_result("ESP not responding!", ATTR_ERROR);
         connection_state = STATE_DISCONNECTED;
         draw_status_bar();
         return;
     }
 
-    main_puts(" ");
-    current_attr = ATTR_RESPONSE;
-    main_puts(S_OK);
-    main_newline();
+    status_result(S_OK, ATTR_RESPONSE);
 
     current_attr = ATTR_LOCAL;
-    main_puts(S_CHECKING);
-    main_newline();
+    main_print(S_CHECKING);
 
     uint8_t wifi_result = check_wifi_connection();
     if (wifi_result == 1) {
         current_attr = ATTR_RESPONSE;
-        main_puts("WiFi connected");
-        main_newline();
+        main_print("WiFi connected");
         connection_state = STATE_WIFI_OK;
     } else if (wifi_result == 2) {
         current_attr = ATTR_ERROR;
-        main_puts(S_CANCEL);
-        main_newline();
+        main_print(S_CANCEL);
         connection_state = STATE_DISCONNECTED;
     } else {
         current_attr = ATTR_ERROR;
-        main_puts("No WiFi connection");
-        main_newline();
+        main_print(S_NO_WIFI);
         connection_state = STATE_DISCONNECTED;
     }
     draw_status_bar();
@@ -392,20 +380,14 @@ static void smart_init(void)
 
         if (try_read_line()) {
             if (rx_line[0] == 'O' && rx_line[1] == 'K') {
-                main_puts(" ");
-                current_attr = ATTR_RESPONSE;
-                main_puts(S_OK);
-                main_newline();
+                status_result(S_OK, ATTR_RESPONSE);
                 goto esp_ok;
             }
             rx_pos = 0;
         }
     }
 
-    main_puts(" ");
-    current_attr = ATTR_ERROR;
-    main_puts("FAIL");
-    main_newline();
+    status_result("FAIL", ATTR_ERROR);
     connection_state = STATE_DISCONNECTED;
     draw_status_bar();
     return;
@@ -418,17 +400,11 @@ esp_ok:
     uart_send_string("AT+CWJAP?\r\n");
 
     if (wait_for_string("+CWJAP:", 200)) {
-        main_puts(" ");
-        current_attr = ATTR_RESPONSE;
-        main_puts(S_OK);
-        main_newline();
+        status_result(S_OK, ATTR_RESPONSE);
         check_wifi_connection();
         connection_state = STATE_WIFI_OK;
     } else {
-        main_puts(" ");
-        current_attr = ATTR_ERROR;
-        main_puts("No WiFi");
-        main_newline();
+        status_result(S_NO_WIFI, ATTR_ERROR);
         connection_state = STATE_DISCONNECTED;
     }
 
@@ -440,9 +416,9 @@ esp_ok:
 // ============================================================================
 
 // Forward declarations (needed by confirm_disconnect)
-static void esp_tcp_close(uint8_t sock);
+static void esp_tcp_close(uint8_t sock) __z88dk_fastcall;
 static uint8_t esp_tcp_send(uint8_t sock, const char *data, uint16_t len);
-static uint8_t quick_noop_check(uint16_t max_frames);
+static uint8_t quick_noop_check(uint16_t max_frames) __z88dk_fastcall;
 
 static uint8_t confirm_disconnect(void)
 {
@@ -455,7 +431,7 @@ static uint8_t confirm_disconnect(void)
         if (ay_uart_ready()) ay_uart_read();
 
         uint8_t k = in_inkey();
-        if (k == 'n' || k == 'N' || key_edit_down()) {
+        if (k == 'n' || k == 'N' || key_break_down()) {
             current_attr = ATTR_LOCAL;
             main_print(S_CANCEL);
             return 0;
@@ -479,8 +455,6 @@ static uint8_t esp_tcp_connect(uint8_t sock, const char *host, uint16_t port)
 {
     uint8_t result;
 
-    debug_enabled = 0;
-
     uart_flush_rx();
     {
         char *p = tx_buffer;
@@ -491,15 +465,13 @@ static uint8_t esp_tcp_connect(uint8_t sock, const char *host, uint16_t port)
         p = str_append(p, "\",");
         p = u16_to_dec(p, port);
     }
-    uart_send_string(tx_buffer);
-    uart_send_string(S_CRLF);
+    esp_send_at(tx_buffer);
     result = wait_for_string(S_CONNECT, 500);
 
-    debug_enabled = 1;
     return result;
 }
 
-static void esp_tcp_close(uint8_t sock)
+static void esp_tcp_close(uint8_t sock) __z88dk_fastcall
 {
     {
         char *p = tx_buffer;
@@ -512,7 +484,6 @@ static void esp_tcp_close(uint8_t sock)
 
 static uint8_t esp_tcp_send(uint8_t sock, const char *data, uint16_t len)
 {
-    uint16_t i;
     uint16_t frames;
     int16_t c;
 
@@ -534,7 +505,8 @@ static uint8_t esp_tcp_send(uint8_t sock, const char *data, uint16_t len)
     while (frames < 150) {
         HALT();
 
-        if (key_edit_down()) {
+        if (key_break_down()) {
+            uart_flush_rx();
             return 0;
         }
 
@@ -547,6 +519,7 @@ static uint8_t esp_tcp_send(uint8_t sock, const char *data, uint16_t len)
                 if (strstr(rx_line, S_ERROR) ||
                     strstr(rx_line, "link is not") ||
                     strstr(rx_line, S_CLOSED)) {
+                    uart_flush_rx();
                     return 0;
                 }
                 rx_pos = 0;
@@ -556,12 +529,12 @@ static uint8_t esp_tcp_send(uint8_t sock, const char *data, uint16_t len)
         }
         frames++;
     }
+    // Timeout or error waiting for '>': flush to clean ESP state
+    uart_flush_rx();
     return 0;
 
 send_data:
-    for (i = 0; i < len; i++) {
-        ay_uart_send(data[i]);
-    }
+    ay_uart_send_block((void *)data, len);
 
     wait_frames(2);
 
@@ -571,9 +544,10 @@ send_data:
 // ============================================================================
 // QUICK CONTROL-CHANNEL PROBE (LOW COST)
 // ============================================================================
-static uint8_t quick_noop_check(uint16_t max_frames)
+static uint8_t quick_noop_check(uint16_t max_frames) __z88dk_fastcall
 {
     uint16_t frames = 0;
+    char *payload;
 
     if (connection_state < STATE_FTP_CONNECTED) {
         return 0;
@@ -589,6 +563,15 @@ static uint8_t quick_noop_check(uint16_t max_frames)
         if (try_read_line()) {
             if (rx_line[0] == '2' && rx_line[1] >= '0' && rx_line[1] <= '9' && rx_line[2] >= '0' && rx_line[2] <= '9') {
                 return 1;
+            }
+            if (strncmp(rx_line, S_IPD0, 7) == 0) {
+                payload = strchr(rx_line, ':');
+                if (payload &&
+                    payload[1] == '2' &&
+                    payload[2] >= '0' && payload[2] <= '9' &&
+                    payload[3] >= '0' && payload[3] <= '9') {
+                    return 1;
+                }
             }
             if (strstr(rx_line, S_CLOSED1)) {
                 return 0;

@@ -230,18 +230,15 @@ _ay_uart_ready:
     out (c), a
     inc b                   ; FC3B -> FD3B
     in a, (c)
-    and UART_BYTE_RECIVED
-    jr z, uartReady_no
-
-    ld a, 1
-    ld (_is_recv), a
+    ; OPT: branchless — rlca moves bit 7 (RECIVED) to bit 0
+    rlca
+    and 1
+    ld (_is_recv), a        ; 1 if data, 0 if not (safe: was already 0)
+    ld l, a
+    ret
 
 uartReady_yes:
     ld l, 1
-    ret
-
-uartReady_no:
-    ld l, 0
     ret
 
 _ay_uart_ready_fast:

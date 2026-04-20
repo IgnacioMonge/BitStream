@@ -4,41 +4,12 @@
 
 #include "../include/bitstream.h"
 
-uint8_t  *g_ldir_dst;
-uint8_t  *g_ldir_src;
-uint16_t  g_ldir_len;
-
-static void ldir_copy_run(void);
-
-static void ldir_copy_fwd(void *dst, const void *src, uint16_t len)
-{
-    g_ldir_dst = (uint8_t*)dst;
-    g_ldir_src = (uint8_t*)src;
-    g_ldir_len = len;
-    ldir_copy_run();
-}
-
-#asm
-_ldir_copy_run:
-    ld hl,(_g_ldir_src)
-    ld de,(_g_ldir_dst)
-    ld bc,(_g_ldir_len)
-    ld a,b
-    or c
-    ret z
-    ldir
-    ret
-#endasm
-
-
-// Font data is now in ASM (asm/bitstream_asm.asm, compressed format)
-
-// Keyboard: immediate EDIT detection (CAPS SHIFT + 1)
-static uint8_t g_user_cancel = 0;
+// Keyboard: immediate BREAK detection (CAPS SHIFT + SPACE)
+static uint8_t g_user_cancel;
 
 // CAPS LOCK state
-volatile uint8_t caps_lock_mode = 0;
-volatile uint8_t caps_latch = 0;
+uint8_t caps_lock_mode = 0;
+uint8_t caps_latch = 0;
 
 // 1. Gestiona el encendido/apagado (Toggle) con CAPS SHIFT + 2
 static void check_caps_toggle(void)
@@ -123,11 +94,11 @@ _shift_no:
 }
 
 
-static uint8_t key_edit_down(void)
+static uint8_t key_break_down(void)
 {
 #asm
-    push bc          ; Guardamos BC por seguridad
-    ld   h, 0        ; IMPORTANTE: Limpiar H para que el valor de retorno en HL sea correcto
+    push bc
+    ld   h, 0
 
     ; CAPS SHIFT (Fila 0xFE, bit 0)
     ld   bc, 0xFEFE
@@ -135,21 +106,21 @@ static uint8_t key_edit_down(void)
     and  0x01
     ld   l, a        ; L = estado CAPS (0=pulsado)
 
-    ; Tecla '1' (Fila 0xF7, bit 0)
-    ld   bc, 0xF7FE
+    ; SPACE (Fila 0x7F, bit 0)
+    ld   bc, 0x7FFE
     in   a, (c)
     and  0x01
-    or   l           ; A = CAPS | '1'. Si ambos son 0, resultado es 0.
+    or   l           ; A = CAPS | SPACE. Si ambos son 0, resultado es 0.
 
-    jr   nz, _not_edit
+    jr   nz, _not_break
 
-    ld   l, 1        ; Ambas pulsadas -> Devolver 1 (True)
-    pop  bc          ; Restaurar BC
+    ld   l, 1        ; BREAK pulsado -> Devolver 1
+    pop  bc
     ret
 
-_not_edit:
-    ld   l, 0        ; No pulsadas -> Devolver 0 (False)
-    pop  bc          ; Restaurar BC
+_not_break:
+    ld   l, 0
+    pop  bc
     ret
 #endasm
 }
@@ -158,19 +129,19 @@ _not_edit:
 // ============================================================================
 // FORWARD DECLARATIONS (bridge across SCU modules)
 // ============================================================================
-static void main_print(const char *s);
+static void main_print(const char *s) __z88dk_fastcall;
 extern void main_newline(void);
 extern void main_puts(const char *s) __z88dk_fastcall;
 extern char* skip_ws(char *p) __z88dk_fastcall;
 static void invalidate_status_bar(void);
-static uint32_t parse_size_arg(const char *s);
-static void redraw_input_from(uint8_t start_pos);
+static uint32_t parse_size_arg(const char *s) __z88dk_fastcall;
+static void redraw_input_from(uint8_t start_pos) __z88dk_fastcall;
 static void draw_cursor_underline(uint8_t y, uint8_t col);
 static uint8_t wait_for_ftp_code_fast(uint16_t max_frames, const char *code3);
 static void draw_status_bar_real(void);
 static void print_char64(uint8_t y, uint8_t col, uint8_t c, uint8_t attr) __z88dk_callee;
 static void put_char64_input_cached(uint8_t y, uint8_t col, uint8_t c, uint8_t attr);
-static void fail(const char *msg);
+static void fail(const char *msg) __z88dk_fastcall;
 static void close_connection_sequence(void);
 extern void uart_drain_to_buffer(void);
 static uint8_t prompt_input_zone(const char *prompt, char *buf, uint8_t max_len, uint8_t masked);
@@ -180,8 +151,9 @@ static uint8_t prompt_input_zone(const char *prompt, char *buf, uint8_t max_len,
 // ============================================================================
 
 static char line_buffer[LINE_BUFFER_SIZE];
-static uint8_t line_len = 0;
-static uint8_t cursor_pos = 0;
+static uint8_t line_len;
+static uint8_t cursor_pos;
+static uint8_t input_prompt_len = 2;  // "> " = 2 chars; prompt mode may be longer
 
 // ============================================================================
 // BUFFERS
@@ -192,7 +164,7 @@ static char ftp_cmd_buffer[128];
 
 // File write buffer - 512 bytes for efficient SD writes
 static uint8_t file_buffer[512];
-static uint16_t file_buf_pos = 0;
+static uint16_t file_buf_pos;
 
 // ============================================================================
 // COMMON STRINGS (save code space)
@@ -214,17 +186,23 @@ static const char S_CMD_QUIT[]  = "QUIT\r\n";
 
 // Repeated UI strings (String Tail Merging optimization)
 static const char S_EMPTY[] = "---";
-static const char S_NO_CONN[] = "No connection. Use OPEN.";
+static const char S_NO_CONN[] = "Not connected";
 static const char S_LOGIN_BAD[] = "Login incorrect";
 static const char S_CHECKING[] = "Checking connection.";
 static const char S_OK[] = "OK";
 static const char S_ERROR[] = "ERROR";
-static const char S_UNKNOWN_CMD[] = "Unknown command. Type HELP";
+static const char S_UNKNOWN_CMD[] = "Unknown cmd. Type HELP";
 static const char S_DISCONN[] = "Disconnected";
 static const char S_CONNECT[] = "CONNECT";
 static const char S_CLOSED[] = "CLOSED";
 static const char S_ATE0[] = "ATE0\r\n";
 static const char S_AT[] = "AT\r\n";
+static const char S_NO_WIFI[] = "No WiFi";
+static const char S_0CLOSED[] = "0,CLOSED";
+static const char S_550[] = "550";
+static const char S_553[] = "553";
+static const char S_SLASH[] = "/";
+static const char S_LIST_HDR[] = "T      Size Filename";
 
 // st_copy_n is in asm/bitstream_asm.asm
 extern void st_copy_n(char *dst, const char *src, uint8_t max_len);
@@ -240,7 +218,7 @@ static char ftp_user[20] = "---";
 static char ftp_path[PATH_SIZE] = "---";
 static char data_ip[16];
 
-static uint16_t data_port = 0;
+static uint16_t data_port;
 static uint8_t connection_state = STATE_DISCONNECTED;
 
 // Helper para limpiar estado FTP (evita duplicación)
@@ -263,23 +241,20 @@ uint8_t current_attr = ATTR_LOCAL;
 
 // esxDOS detection
 extern uint8_t detect_esxdos(void);
-static uint8_t esxdos_available = 0;
-
-// Debug mode flags
-static uint8_t debug_enabled = 1;
+static uint8_t esxdos_available;
 
 // Progress bar state
-static uint8_t status_bar_overwritten = 0;
+static uint8_t status_bar_overwritten;
 static char spinner_chars[] = "|/-\\";
-static uint8_t spinner_idx = 0;
+static uint8_t spinner_idx;
 
 // ============================================================================
 // COMMAND HISTORY
 // ============================================================================
 
 static char history[HISTORY_SIZE][HISTORY_LEN];
-static uint8_t hist_head = 0;
-static uint8_t hist_count = 0;
+static uint8_t hist_head;
+static uint8_t hist_count;
 static int8_t hist_pos = -1;
 static char temp_input[LINE_BUFFER_SIZE];
 
@@ -288,14 +263,14 @@ static void history_add(const char *cmd, uint8_t len)
     uint8_t i;
     if (len == 0) return;
     if (hist_count > 0) {
-        uint8_t last = (hist_head + HISTORY_SIZE - 1) % HISTORY_SIZE;
+        uint8_t last = (hist_head + HISTORY_SIZE - 1) & (HISTORY_SIZE - 1);
         if (strcmp(history[last], cmd) == 0) return;
     }
     for (i = 0; i < len && i < HISTORY_LEN - 1; i++) {
         history[hist_head][i] = cmd[i];
     }
     history[hist_head][i] = 0;
-    hist_head = (hist_head + 1) % HISTORY_SIZE;
+    hist_head = (hist_head + 1) & (HISTORY_SIZE - 1);
     if (hist_count < HISTORY_SIZE) hist_count++;
     hist_pos = -1;
 }
@@ -306,7 +281,7 @@ static void history_nav_up(void)
     if (hist_count == 0) return;
     if (hist_pos == -1) memcpy(temp_input, line_buffer, line_len + 1);
     if (hist_pos < (int8_t)(hist_count - 1)) hist_pos++;
-    idx = (hist_head + HISTORY_SIZE - 1 - hist_pos) % HISTORY_SIZE;
+    idx = (hist_head + HISTORY_SIZE - 1 - hist_pos) & (HISTORY_SIZE - 1);
     safe_copy(line_buffer, history[idx], sizeof(line_buffer));
     line_len = strlen(line_buffer);
     cursor_pos = line_len;
@@ -321,14 +296,14 @@ static void history_nav_down(void)
         memcpy(line_buffer, temp_input, LINE_BUFFER_SIZE);
         line_len = strlen(line_buffer);
     } else {
-        idx = (hist_head + HISTORY_SIZE - 1 - hist_pos) % HISTORY_SIZE;
+        idx = (hist_head + HISTORY_SIZE - 1 - hist_pos) & (HISTORY_SIZE - 1);
         safe_copy(line_buffer, history[idx], sizeof(line_buffer));
         line_len = strlen(line_buffer);
     }
     cursor_pos = line_len;
 }
 
-static void history_nav_and_redraw(int8_t direction)
+static void history_nav_and_redraw(int8_t direction) __z88dk_fastcall
 {
     uint8_t prev_len = line_len;
 
@@ -342,8 +317,8 @@ static void history_nav_and_redraw(int8_t direction)
         uint8_t i;
         for (i = line_len; i <= prev_len; i++) {
             uint16_t abs_pos = i + 2;
-            uint8_t row = INPUT_START + (abs_pos / SCREEN_COLS);
-            uint8_t col = abs_pos % SCREEN_COLS;
+            uint8_t row = INPUT_START + (abs_pos >> 6);
+            uint8_t col = abs_pos & 63;
             if (row <= INPUT_END) put_char64_input_cached(row, col, ' ', ATTR_INPUT_BG);
         }
     }

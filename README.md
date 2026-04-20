@@ -3,7 +3,7 @@
 
 **FTP Client for ZX Spectrum**
 
-BitStream is a fully-featured FTP client for the ZX Spectrum, enabling file downloads from FTP servers over WiFi using an ESP8266/ESP-12 module. Supports two UART interfaces: **divMMC/divTiesus** at 115200 baud and **AY-UART bit-banging** at 9600 baud.
+BitStream is a WiFi FTP client for the ZX Spectrum using an ESP8266/ESP-12 module. It supports two UART backends: **divMMC/divTiesus** at 115200 baud and **AY-3-8912 bit-banging** at 9600 baud. Version 1.3.0 focuses on a safer transfer pipeline, tighter rendering, and a cleaner release build system.
 
 
 > [Leer en Espanol](READMEsp.md)
@@ -11,17 +11,18 @@ BitStream is a fully-featured FTP client for the ZX Spectrum, enabling file down
 ## Features
 
 - **Dual UART support** - divMMC/divTiesus (115200 baud) or AY bit-banging (9600 baud)
-- **64-column display** - Clean, readable interface with color-coded output using a compressed 4x8 pixel font
-- **Standard FTP commands** - OPEN, USER, PWD, CD, LS, GET, QUIT
-- **Quick connect** - `!CONNECT host/path user [pass]` for one-line server access
-- **Interactive login** - Prompts for user/password with masked input and anonymous defaults
-- **File search** - `!SEARCH` to find files by pattern and minimum size
-- **Batch downloads** - Download multiple files with `GET file1 file2 file3`
-- **Progress bar** - Visual feedback during file transfers (red for downloads)
-- **Connection monitoring** - Automatic detection of timeouts and disconnections
-- **Command history** - Navigate previous commands with UP/DOWN arrows (4 entries)
-- **Cancellable operations** - Press EDIT key to abort any operation
-- **esxDOS integration** - Direct SD card writes via RST 0x08 traps
+- **64-column UI** - compressed 4x8 font with color-coded output
+- **Double-height status and progress bars** - cleaner status visibility with reduced flicker
+- **Standard FTP commands** - `OPEN`, `USER`, `PWD`, `CD`, `LS`, `GET`, `QUIT`
+- **Quick connect** - `!CONNECT host[:port][/path] user [pass]`
+- **Interactive login** - masked password entry with `UP` to toggle visibility
+- **Listing filters** - `LS -d` for directories, `LS -f` for files
+- **Search filters** - `!SEARCH [pattern] [>size]`
+- **Quoted filenames** - supports names with spaces in command arguments
+- **Connection monitoring** - detects timeouts, disconnects, and broken control sessions
+- **Safe downloads** - partial files are removed automatically after failed transfers
+- **Command history and in-line editing** - `UP/DOWN/LEFT/RIGHT/BACKSPACE`
+- **esxDOS integration** - direct SD card writes via RST 0x08 traps
 
 [![BitStream1](images/BTS1_1.png)](images/BTS1.png) [![BitStream2](images/BTS2_1.png)](images/BTS2.png) [![BitStream3](images/BTS3_1.png)](images/BTS3.png)
 
@@ -38,33 +39,33 @@ BitStream is a fully-featured FTP client for the ZX Spectrum, enabling file down
 
 ### Software
 - esxDOS 0.8.x or higher
-- WiFi network pre-configured on ESP module (use [NetManZX](https://github.com/IgnacioMonge/NetManZX) or similar)
+- WiFi network pre-configured on the ESP module (use [NetManZX](https://github.com/IgnacioMonge/NetManZX) or similar)
 
 ## Installation
 
-1. Copy the appropriate `.tap` file to your SD card:
-   - `BitStream_divTiesus.tap` for divMMC/divTiesus UART
-   - `BitStream_AY.tap` for AY bit-banging
-2. Load with `LOAD ""`
-3. Or copy the compiled binary to run directly from esxDOS
+Download the release assets for your target hardware:
+
+- `BitStream_divTiesus.tap` for divMMC/divTiesus UART
+- `BitStream_AY.tap` for AY bit-banging
+
+Copy the `.tap` file to your SD card and load it with `LOAD ""`, or launch the generated binary directly from esxDOS if you prefer.
 
 ## Quick Start
 
-```
+```text
 !CONNECT ftp.example.com/pub/spectrum anonymous
-LS
-CD games
-GET game.tap
+LS -f
+GET "game.tap"
 QUIT
 ```
 
 Or connect step by step:
 
-```
+```text
 OPEN ftp.scene.org
 ```
 
-BitStream will prompt for username and password interactively. Press ENTER to accept the anonymous defaults.
+BitStream will prompt for username and password interactively. Press `ENTER` to accept the anonymous defaults. During masked password input, press `UP` to toggle visibility.
 
 ## Commands
 
@@ -76,18 +77,18 @@ BitStream will prompt for username and password interactively. Press ENTER to ac
 | `USER name [pass]` | Login with credentials | `USER anonymous` |
 | `PWD` | Show current directory | `PWD` |
 | `CD path` | Change directory | `CD /pub/games` |
-| `LS [filter]` | List directory contents | `LS *.tap` |
-| `GET file [...]` | Download file(s) | `GET game.tap` |
+| `LS [filter]` | List directory contents (`-d` / `-f`) | `LS -f` |
+| `GET file` | Download a file | `GET "Manual del Usuario.pdf"` |
 | `QUIT` | Disconnect from server | `QUIT` |
 
 ### Special Commands
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| `!CONNECT` | Quick connect with path | `!CONNECT ftp.site.com/path user pass` |
+| `!CONNECT` | Quick connect with optional path | `!CONNECT ftp.site.com/path user pass` |
 | `!STATUS` | Show connection status | `!STATUS` |
-| `!SEARCH [pattern] [>size]` | Search files | `!SEARCH *.sna >16000` |
-| `!INIT` | Re-initialize WiFi module | `!INIT` |
+| `!SEARCH [pattern] [>size]` | Search files | `!SEARCH *.tap >16000` |
+| `!INIT` | Re-initialize the WiFi module | `!INIT` |
 | `HELP` | Show standard commands | `HELP` |
 | `!HELP` | Show special commands | `!HELP` |
 | `!CLS` | Clear screen | `!CLS` |
@@ -95,90 +96,102 @@ BitStream will prompt for username and password interactively. Press ENTER to ac
 
 ### Navigation
 
-- **UP/DOWN** - Command history
-- **LEFT/RIGHT** - Move cursor in input line
-- **EDIT** - Cancel current operation
-- **ENTER** - Execute command
+- **UP/DOWN** - command history
+- **LEFT/RIGHT** - move cursor in the input line
+- **BREAK** - cancel the current operation
+- **ENTER** - execute command
 
-## File Search
+## Search and Listing Filters
 
-The `!SEARCH` command allows filtering by name pattern and minimum file size:
+`LS` and `!SEARCH` both support extra filtering:
 
+```text
+LS -d                 # Directories only
+LS -f                 # Files only
+!SEARCH *.tap         # Name pattern
+!SEARCH >16384        # Minimum size
+!SEARCH *.sna >48000  # Pattern + minimum size
 ```
-!SEARCH *.tap          # Find all .tap files
-!SEARCH game           # Find files containing "game"
-!SEARCH *.sna >48000   # Find .sna files larger than 48KB
-!SEARCH >16384         # Find any file larger than 16KB
-```
 
-## Status Bar
-
-The bottom status bar shows:
-- **Host** - Connected server (or "---" if disconnected)
-- **User** - Logged in username
-- **Path** - Current remote directory
-- **Indicator** - Connection state (green=logged in, yellow=connected, red=disconnected)
+BitStream also preserves incoming UTF-8 bytes until the final ASCII conversion step, which improves listings for names containing accented or non-ASCII characters.
 
 [![BitStream4](images/BTS4_1.png)](images/BTS4.png) [![BitStream5](images/BTS5_1.png)](images/BTS5.png) [![BitStream6](images/BTS6_1.png)](images/BTS6.png)
 
 
+## Status Bar
+
+The bottom status area shows:
+- **Host** - connected server (or `---` if disconnected)
+- **User** - logged-in username
+- **Path** - current remote directory
+- **Indicator** - connection state (green=logged in, yellow=connected, red=disconnected)
+
+Version 1.3.0 uses double-height rendering for both the status bar and the transfer progress bar, with partial redraw logic to reduce flicker.
+
 ## Troubleshooting
 
 ### "No WiFi" on startup
-- Ensure ESP module is properly connected
-- Check WiFi is configured (use NetManZX first)
-- Try `!INIT` to re-initialize
+- Ensure the ESP module is properly connected
+- Check that WiFi is configured (use NetManZX first)
+- Try `!INIT` to re-initialize the module
 
 ### Connection timeouts
-- Server may have idle timeout; reconnect with `!CONNECT`
+- The server may have an idle timeout; reconnect with `!CONNECT`
 - Check WiFi signal strength
-- Some servers limit anonymous connections
+- After a long paged listing pause, BitStream now probes the control channel before keeping the session alive
 
 ### Transfer errors
-- Ensure sufficient space on SD card
-- Large files may timeout on slow connections
-- Use `!STATUS` to verify connection is alive
+- Ensure sufficient free space on the SD card
+- Failed or cancelled transfers now remove incomplete local files automatically
+- Use `!STATUS` to verify that the control connection is still alive
 
 ### Commands not responding
-- Press EDIT to cancel stuck operations
-- Try `!INIT` to reset module state
+- Press `BREAK` to cancel blocked operations
+- Try `!INIT` to reset the ESP state
 
 ## Technical Details
 
 - **UART**: divMMC/divTiesus at 115200 bps, or AY bit-banging at 9600 bps
-- **Protocol**: FTP passive mode (CIPMUX=1, socket 0=control, 1=data)
-- **Display**: 64-column text mode (compressed 4x8 pixel font, 298 bytes)
-- **Buffer**: 2048-byte ring buffer for UART
-- **Memory**: ORG 24000, 256-byte stack, BSS trim via `__data_compiler_tail`
-- **Timeouts**: Frame-based (50Hz) for accurate timing
+- **Protocol**: FTP passive mode (`CIPMUX=1`, socket 0=control, 1=data)
+- **Display**: 64-column text mode with compressed 4x8 font
+- **Buffer**: 2048-byte ring buffer for UART traffic
+- **Build pipeline**: BPE compression -> build -> restore -> BSS trim
+- **Memory**: ORG 24000, 512-byte CRT stack, BSS trim via `__data_compiler_tail`
+- **Timeouts**: frame-based (50Hz) for accurate timing
 
 ## Architecture
 
-BitStream v1.2.0 uses a modular Single Compilation Unit (SCU) design:
+BitStream v1.3.0 keeps a modular Single Compilation Unit (SCU) layout:
 
-```
+```text
 src/
-  main_build.c    # SCU orchestrator (#includes all modules)
-  globals.c       # Global state, constants, shared strings
-  ui.c            # Video, widgets, status bar, input zone
-  comms.c         # Ring buffer, UART helpers, ESP init, TCP
-  ftp.c           # FTP protocol, esxDOS, download, list
-  commands.c      # Command parser, help, status
-  main.c          # Screen init, main loop
+  main_build.c         # SCU orchestrator (#includes all modules)
+  globals.c            # Global state, constants, shared strings
+  ui.c                 # Video, widgets, status bar, input zone
+  comms.c              # Ring buffer, UART helpers, ESP init, TCP
+  ftp.c                # FTP protocol, esxDOS, downloads, listings
+  commands.c           # Command parser, help, status
+  main.c               # Screen init, banner, main loop
+  bitstream_copt.rul   # Extra size-oriented copt rules
 include/
-  bitstream.h     # Master header (constants, externs, ASM decls)
-  font64_data.h   # 4px wide font (96 chars, packed nibbles)
+  bitstream.h          # Master header
+  font64_data.h        # 4px font data
 asm/
-  bitstream_asm.asm     # Core ASM routines (screen, ring buffer, rendering)
-  divtiesus_uart.asm    # divMMC UART driver (115200 baud)
-  ay_uart.asm           # AY bit-bang UART driver (9600 baud)
+  bitstream_asm.asm    # Core ASM routines
+  divtiesus_uart.asm   # divMMC UART driver
+  ay_uart.asm          # AY bit-bang driver
+tools/
+  bpe_compress.py      # Build-time string compressor
+  bpe_analyze.py       # BPE analysis helper
 ```
 
-Critical routines (screen scrolling, ring buffer, string operations, text rendering) are implemented in Z80 assembly for performance on the 3.5MHz CPU.
+Critical routines such as scrolling, ring-buffer handling, string helpers, and text rendering are implemented in Z80 assembly for performance on the 3.5MHz CPU.
 
 ## Building from Source
 
-Requires [z88dk](https://github.com/z88dk/z88dk) compiler.
+Requires:
+- [z88dk](https://github.com/z88dk/z88dk)
+- `python3` for the BPE build step
 
 ```bash
 # Build divMMC version (default)
@@ -190,9 +203,14 @@ make ay
 # Build both versions
 make both
 
-# Release build (aggressive optimization)
+# Release build (divMMC)
 make release
+
+# Release build (AY)
+make release-ay
 ```
+
+All build artifacts are generated in `build/`.
 
 ## Credits
 
@@ -212,4 +230,4 @@ This project is released under the MIT License. See [LICENSE](LICENSE) for detai
 
 ---
 
-*BitStream v1.2.0 - (C) 2026 M. Ignacio Monge Garcia*
+*BitStream v1.3.0 - (C) 2026 M. Ignacio Monge Garcia*

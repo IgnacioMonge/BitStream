@@ -1,0 +1,42 @@
+;;
+;; BitStream custom copt rules (sccz80 / -clib=new)
+;; Applied via -custom-copt-rules in Makefile
+;; copt: multi-pass (up to 16), matches backwards, first-match wins.
+;;
+;; NOTE: sccz80 uses TAB as separator (e.g. "add\thl,hl"), NOT spaces.
+;; All patterns must match sccz80 output format exactly.
+;;
+
+;; Unsigned L * 32 (pass 1, before HL*32)
+;; sccz80 pattern: ld h,0 / 5x add hl,hl
+;; Saves 4 bytes per site
+%0ld%1h,0
+%0add%1hl,hl
+%0add%1hl,hl
+%0add%1hl,hl
+%0add%1hl,hl
+%0add%1hl,hl
+=
+	EXTERN _l_mul32
+%0call%1_l_mul32
+
+;; HL *= 32 (pass 1)
+;; Saves 2 bytes per site
+%0add%1hl,hl
+%0add%1hl,hl
+%0add%1hl,hl
+%0add%1hl,hl
+%0add%1hl,hl
+=
+	EXTERN _hl_mul32
+%0call%1_hl_mul32
+
+;; rx_pos = 0 for uint8_t (pass 1)
+;; sccz80 generates: ld hl,0 / ld a,l / ld (_rx_pos),a
+;; (3 instructions, 7 bytes -> call 3 bytes = saves 4 bytes per site)
+%0ld%1hl,0	;const
+%0ld%1a,l
+%0ld%1(_rx_pos),a
+=
+	EXTERN _rx_pos_reset
+%0call%1_rx_pos_reset

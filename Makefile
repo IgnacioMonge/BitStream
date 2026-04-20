@@ -1,7 +1,8 @@
 # ============================================================
 # BitStream Makefile - FTP Client for ZX Spectrum
 # Default pipeline: CHECK -> CLEAN -> BUILD -> TRIM -> INFO
-# Supports: divMMC/divTiesus UART (115200) and AY bit-bang (9600)
+# Default target: divMMC/divTiesus UART (115200 baud)
+# All build artifacts go to build/
 # ============================================================
 
 .DEFAULT_GOAL := all
@@ -32,23 +33,25 @@ ASM_AY      = asm/ay_uart.asm
 # ------------------------------------------------------------
 AY_UART     ?= 0
 ZORG        = 24000
-STACK_SIZE  = 256
+STACK_SIZE  = 512
 
 # Determine UART-specific settings
 ifeq ($(AY_UART),1)
   UART_FLAG   = -DAY_UART
   ASM_SOURCES = $(ASM_COMMON) $(ASM_AY)
   UART_DESC   = AY bit-bang (9600 baud)
-  OUTPUT_NAME = $(OUTPUT)_AY
+  OUTPUT_BASE = $(OUTPUT)_AY
 else
   UART_FLAG   = -DDIVMMC_UART
   ASM_SOURCES = $(ASM_COMMON) $(ASM_DIVMMC)
   UART_DESC   = divMMC/divTiesus (115200 baud)
-  OUTPUT_NAME = $(OUTPUT)_divTiesus
+  OUTPUT_BASE = $(OUTPUT)_divTiesus
 endif
 
-TAP = $(OUTPUT_NAME).tap
-MAP = $(OUTPUT_NAME).map
+# All artifacts go to build/
+OUTPUT_PATH = $(BUILD_DIR)/$(OUTPUT_BASE)
+TAP = $(OUTPUT_PATH).tap
+MAP = $(OUTPUT_PATH).map
 
 EXTRA_CFLAGS  ?=
 BUILD_PROFILE ?= NORMAL
@@ -56,13 +59,14 @@ BUILD_PROFILE ?= NORMAL
 CFLAGS = -vn -O3 -startup=0 -clib=new \
          -zorg=$(ZORG) --opt-code-size \
          $(UART_FLAG) \
+         -custom-copt-rules src/bitstream_copt.rul \
          -pragma-define:CLIB_MALLOC_HEAP_SIZE=0 \
          -pragma-define:CLIB_STDIO_HEAP_SIZE=0 \
          -pragma-define:CRT_STACK_SIZE=$(STACK_SIZE) \
          $(EXTRA_CFLAGS)
 
 SIZE_TAP  = wc -c < "$(TAP)"
-BUILD_CMD = $(CC) $(TARGET) $(CFLAGS) $(C_SOURCES) $(ASM_SOURCES) -m -o $(OUTPUT_NAME) -create-app
+BUILD_CMD = $(CC) $(TARGET) $(CFLAGS) $(C_SOURCES) $(ASM_SOURCES) -m -o $(OUTPUT_PATH) -create-app
 
 # ------------------------------------------------------------
 # ANSI colors (disable with NO_COLOR=1)
@@ -120,12 +124,13 @@ endef
 # ------------------------------------------------------------
 # Phony targets
 # ------------------------------------------------------------
-.PHONY: all check clean build trim info help ay divmmc both release version
+.PHONY: all check clean build trim info help ay divmmc both release version bpe-build bpe-restore
 
 # ------------------------------------------------------------
-# Default pipeline
+# Default pipeline (divMMC)
+# BPE: compress -> build -> restore (ALWAYS restore, even on failure)
 # ------------------------------------------------------------
-all: check clean build trim info
+all: check clean bpe-build trim info
 
 # Convenience targets
 ay:
@@ -153,6 +158,7 @@ help:
 	@printf "\nOptions:\n"
 	@printf "  NO_COLOR=1      Disable ANSI colors\n"
 	@printf "  AY_UART=1       Target AY bit-bang UART\n"
+	@printf "\nAll build artifacts are placed in $(BUILD_DIR)/\n"
 	$(call HR)
 
 # ------------------------------------------------------------
@@ -182,9 +188,23 @@ check:
 # ------------------------------------------------------------
 clean:
 	$(call STEP,1/3,Cleaning)
-	@rm -f $(OUTPUT)_*.tap $(OUTPUT)_*.map $(OUTPUT)_*_CODE.bin $(OUTPUT)_divTiesus $(OUTPUT)_AY $(LOG) *.o *.bin *.sym 2>/dev/null || true
+	@rm -f $(BUILD_DIR)/$(OUTPUT)_*.tap $(BUILD_DIR)/$(OUTPUT)_*.map \
+	       $(BUILD_DIR)/$(OUTPUT)_*_CODE.bin $(BUILD_DIR)/$(OUTPUT)_divTiesus \
+	       $(BUILD_DIR)/$(OUTPUT)_AY $(LOG) \
+	       $(BUILD_DIR)/*.o $(BUILD_DIR)/*.bin $(BUILD_DIR)/*.sym 2>/dev/null || true
+	@rm -f $(OUTPUT)_*.tap $(OUTPUT)_*.map $(OUTPUT)_*_CODE.bin *.o *.sym 2>/dev/null || true
 	$(call OK,Clean complete.)
 	$(call HR)
+
+# ------------------------------------------------------------
+# BPE phase: compress -> build -> restore (ALWAYS restore)
+# ------------------------------------------------------------
+bpe-build:
+	@python3 tools/bpe_compress.py
+	@$(MAKE) build; rc=$$?; python3 tools/bpe_compress.py --restore; exit $$rc
+
+bpe-restore:
+	@python3 tools/bpe_compress.py --restore
 
 # ------------------------------------------------------------
 # BUILD phase
@@ -195,7 +215,8 @@ $(TAP): $(C_SOURCES) $(ASM_SOURCES) include/bitstream.h include/font64_data.h
 	$(call STEP,2/3,Build)
 	@echo "Compiling BitStream..."
 	@echo "UART mode: $(UART_DESC)"
-	@echo "Log: $(LOG)"
+	@echo "Output:    $(TAP)"
+	@echo "Log:       $(LOG)"
 	$(call RUN_SPINNER,$(BUILD_CMD) 2>&1 | tee "$(LOG)",Compiling...,Build complete!,BUILD FAILED - see $(LOG))
 	$(call HR)
 
@@ -210,8 +231,8 @@ trim: $(TAP) $(MAP)
 	    exit 0; \
 	  fi; \
 	  trim=$$((0x$$bss - $(ZORG))); \
-	  bin="$(OUTPUT_NAME)_CODE.bin"; \
-	  if [ ! -f "$$bin" ]; then bin="$(OUTPUT_NAME)"; fi; \
+	  bin="$(OUTPUT_PATH)_CODE.bin"; \
+	  if [ ! -f "$$bin" ]; then bin="$(OUTPUT_PATH)"; fi; \
 	  if [ ! -f "$$bin" ]; then \
 	    printf "$(C_YEL)[WARN]$(C_RESET) BSS trim skipped (binary not found)\n"; \
 	    exit 0; \
@@ -246,9 +267,9 @@ info: $(TAP)
 # Release build (aggressive optimization)
 # ------------------------------------------------------------
 release:
-	@$(MAKE) BUILD_PROFILE=RELEASE EXTRA_CFLAGS=--max-allocs-per-node200000 all
+	@$(MAKE) BUILD_PROFILE=RELEASE all
 release-ay:
-	@$(MAKE) BUILD_PROFILE=RELEASE EXTRA_CFLAGS=--max-allocs-per-node200000 AY_UART=1 all
+	@$(MAKE) BUILD_PROFILE=RELEASE AY_UART=1 all
 
 # ------------------------------------------------------------
 # Version snapshot (save current build to Versions/)
@@ -260,6 +281,6 @@ version:
 	  dir="Versions/v$$ver"; \
 	  mkdir -p "$$dir"; \
 	  cp -r src include asm Makefile "$$dir/" 2>/dev/null; \
-	  for f in $(OUTPUT)_*.tap; do [ -f "$$f" ] && cp "$$f" "$$dir/"; done 2>/dev/null; \
+	  for f in $(BUILD_DIR)/$(OUTPUT)_*.tap; do [ -f "$$f" ] && cp "$$f" "$$dir/"; done 2>/dev/null; \
 	  printf "$(C_GRN)[OK]$(C_RESET) Version snapshot saved to %s\n" "$$dir"; \
 	'

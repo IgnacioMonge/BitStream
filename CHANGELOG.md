@@ -5,6 +5,65 @@ All notable changes to BitStream are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [1.3.0] - 2026-04-20
+
+### Major: Safer Transfers and Protocol Hardening
+- **Download pipeline hardened**:
+  - Local files are now created only after a positive `150/125` reply
+  - Partial files are deleted automatically after cancel, timeout, or write error
+  - "No data" download timeouts are frame-paced again, avoiding premature aborts
+- **LIST/SEARCH made more robust**:
+  - Silence during listings is now reported as `LIST timeout` / `incomplete`
+  - UTF-8 bytes are preserved until final `utf8_to_ascii()` conversion
+  - `NOOP` validation after long listing pauses now accepts `+IPD,0,...:2xx` replies
+- **Control-channel response handling tightened**:
+  - `wait_for_string()` no longer treats unrelated `OK` replies as success when a specific token is expected
+  - This prevents false positives during WiFi and TCP setup sequences
+
+### Major: Build Pipeline and Size Work
+- **BPE string compression integrated into the build**:
+  - `tools/bpe_compress.py` now compresses UI/server strings before build
+  - Original sources are always restored, even after failed builds
+- **Additional code size reductions**:
+  - Dead code cleanup, tail-call cleanup, string deduplication, and library-drag removal
+  - Custom `copt` rules are now part of the project and wired into the Makefile
+- **Safer runtime margins**:
+  - CRT stack size raised from 256 to 512 bytes
+  - BSS trimming remains part of the default TAP pipeline
+
+### Improvements
+- **Double-height status and progress UI**:
+  - Status bar now uses double-height rendering with partial redraw
+  - Progress bar matches the same style and reduces visible flicker
+- **Input UX refined**:
+  - Password prompts support masked input with `UP` to toggle visibility
+  - Input cache now validates the real VRAM attribute before skipping redraws
+- **Listing and search quality-of-life**:
+  - `LS` supports file/directory filters (`-f`, `-d`)
+  - `!SEARCH` supports pattern and minimum-size filters
+- **Build system refreshed**:
+  - Unified `build/` output directory
+  - `make`, `make divmmc`, `make ay`, `make both`, and release targets documented and maintained
+
+### Bug Fixes
+- **sccz80 / ABI safety**:
+  - `esx_fwrite` inline ASM now preserves IX correctly
+  - `_rx_pos_reset` `copt` rule now preserves the expected `HL=0` contract
+- **FTP correctness**:
+  - Failed or cancelled `GET` no longer leaves zero-byte or truncated files behind
+  - `quick_noop_check()` no longer times out on valid IPD-wrapped FTP control replies
+  - LIST completion is no longer silently reported as success after a timeout
+- **Parser and command cleanup**:
+  - Restricted command checks were folded into the command dispatcher
+  - Internal silent-PWD wrapper removed in favor of direct `pwd_core(1)` usage
+  - 8.3 filename generation and duplicate-name handling were tightened up
+
+### Code Size
+- divMMC TAP: 36634 bytes
+- AY TAP: 37251 bytes
+
+---
+
 
 ## [1.2.0] - 2026-03-07
 
@@ -168,7 +227,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ---
 
 
-## [1.0.0] - 2025-25-12
+## [1.0.0] - 2025-12-25
 
 ### Added
 - Initial public release
@@ -177,14 +236,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Standard FTP commands: OPEN, USER, PWD, CD, LS, GET, QUIT
 - Quick connect command: `!CONNECT host/path user [pass]`
 - File search with pattern and size filtering: `!SEARCH`
-- Batch file downloads: `GET file1 file2 file3`
 - Progress bar with file size display during transfers
 - Connection status monitoring with automatic timeout detection
 - Command history navigation (UP/DOWN arrows, 4 entries)
 - Cursor movement in input line (LEFT/RIGHT arrows)
-- Cancellation support with EDIT key for all operations
+- Cancellation support with BREAK key for all operations
 - Status bar showing host, user, path, and connection indicator
-- Debug mode toggle (`!DEBUG`) for troubleshooting
 - Module re-initialization (`!INIT`) for recovery from errors
 - Help system (`HELP`, `!HELP`, `ABOUT`)
 
@@ -218,47 +275,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Implemented FTP passive mode connection
 - Added USER/PASS authentication flow
 - Built directory listing (LIST) parsing
-- Created file download (RETR) with chunked writes
+- Added file download (RETR) support
+- Integrated timeout handling and error recovery
 
 #### Phase 3: User Interface
-- Designed status bar with live updates
-- Implemented command input with history
-- Added progress bar for file transfers
-- Created help system
-
-#### Phase 4: Robustness
-- Added timeout detection for all operations
-- Implemented connection loss detection
-- Created cancellation system with EDIT key
-- Built automatic reconnection prompts
-
-#### Phase 5: Polish & Optimization
-- Unified timeout handling (frame-based)
-- Consistent keyboard handling (HALT + in_inkey pattern)
-- Centralized state cleanup (`clear_ftp_state()`)
-- Code size optimization (common strings, helper functions)
-- Fixed edge cases in PWD updates after login
-- Resolved ls/search hanging issues
-- Improved !STATUS verification reliability
-
-### Bug Fixes During Development
-- Fixed `!STATUS` hanging at "Verifying connection..."
-- Fixed timeout detection not triggering after long idle
-- Fixed PWD not updating after login
-- Fixed ls command breaking after error detection changes
-- Fixed keyboard responsiveness issues (reduced DRAIN_NORMAL)
-- Fixed silent failures when server disconnects mid-operation
-- Fixed inconsistent cancel behavior across different commands
-
----
+- Added color-coded output system
+- Implemented status bar with connection info
+- Added progress bar for downloads
+- Built command history and line editing
+- Added HELP and diagnostic commands
 
 ## Versioning
 
 This project uses [Semantic Versioning](https://semver.org/):
-- MAJOR: Incompatible changes
-- MINOR: New features, backward compatible
-- PATCH: Bug fixes, backward compatible
+- **MAJOR**: Incompatible architectural changes
+- **MINOR**: New features and significant improvements
+- **PATCH**: Bug fixes only
 
+[1.3.0]: https://github.com/IgnacioMonge/BitStream/releases/tag/v1.3.0
 [1.2.0]: https://github.com/IgnacioMonge/BitStream/releases/tag/v1.2.0
 [1.1.0]: https://github.com/IgnacioMonge/BitStream/releases/tag/v1.1.0
 [1.0.0]: https://github.com/IgnacioMonge/BitStream/releases/tag/v1.0.0

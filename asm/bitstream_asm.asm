@@ -24,6 +24,7 @@ PUBLIC _uart_drain_to_buffer
 PUBLIC _parse_decimal
 PUBLIC _st_copy_n
 PUBLIC _print_str64_char
+PUBLIC _print_line64_fast
 PUBLIC _main_putc
 PUBLIC _main_newline
 PUBLIC _main_puts
@@ -31,7 +32,15 @@ PUBLIC _g_ps64_y
 PUBLIC _g_ps64_col
 PUBLIC _g_ps64_attr
 PUBLIC _detect_esxdos
+PUBLIC _asm_row_base
+PUBLIC _draw_big_char
 PUBLIC _draw_badge_dither
+PUBLIC _main_print_asm
+PUBLIC _main_puts2
+PUBLIC _utf8_to_ascii
+PUBLIC _hl_mul32
+PUBLIC _l_mul32
+PUBLIC _rx_pos_reset
 EXTERN _ay_uart_send
 EXTERN _ay_uart_ready_fast
 EXTERN _ay_uart_read
@@ -203,12 +212,12 @@ trln_loop:
     cp 10                   ; \n?
     jr z, trln_newline
 
-    ; Regular character: store if room
+    ; HARDENED: check overflow BEFORE writing to memory
     ld a, (_rx_pos)
     cp 127                  ; sizeof(rx_line) - 1
     jr nc, trln_overflow
 
-    ; rx_line[rx_pos] = c
+    ; rx_line[rx_pos] = c (safe: rx_pos < 127)
     ld e, a
     ld d, 0
     push hl                 ; save char in L
@@ -218,12 +227,12 @@ trln_loop:
     ld (hl), e
 
     ; rx_pos++
-    ld a, (_rx_pos)
     inc a
     ld (_rx_pos), a
     jr trln_loop
 
 trln_overflow:
+    ; Do NOT write to memory, do NOT increment rx_pos
     ld a, 1
     ld (_rx_overflow), a
     jr trln_loop
@@ -391,12 +400,9 @@ _uart_send_string:
     ld a, (hl)
     or a
     ret z
-    push hl
-    ld l, a
-    ld h, 0
-    push hl             ; sccz80: push arg for ay_uart_send
+    push hl             ; save string pointer (ay_uart_send may clobber HL)
+    ld l, a             ; fastcall: byte in L
     call _ay_uart_send
-    pop hl              ; clean stack (sccz80 caller cleans)
     pop hl              ; restore string pointer
     inc hl
     jr _uart_send_string
@@ -406,10 +412,18 @@ _uart_send_string:
 ; =============================================================================
 
 ; Pre-calculated screen base addresses (internal copy for ASM use)
+_asm_row_base:
 asm_row_base:
     defw 0x4000, 0x4020, 0x4040, 0x4060, 0x4080, 0x40A0, 0x40C0, 0x40E0
     defw 0x4800, 0x4820, 0x4840, 0x4860, 0x4880, 0x48A0, 0x48C0, 0x48E0
     defw 0x5000, 0x5020, 0x5040, 0x5060, 0x5080, 0x50A0, 0x50C0, 0x50E0
+
+; Tabla de direcciones de atributos (24 filas)
+; Elimina calculo repetido de 0x5800 + y*32
+attr_row_base:
+    defw 0x5800, 0x5820, 0x5840, 0x5860, 0x5880, 0x58A0, 0x58C0, 0x58E0
+    defw 0x5900, 0x5920, 0x5940, 0x5960, 0x5980, 0x59A0, 0x59C0, 0x59E0
+    defw 0x5A00, 0x5A20, 0x5A40, 0x5A60, 0x5A80, 0x5AA0, 0x5AC0, 0x5AE0
 
 ; -----------------------------------------------------------------------------
 ; Internal helper: clear one screen line
@@ -488,8 +502,7 @@ _clear_line:
 
     ld a, e
     ld c, l
-    call cli_internal
-    ret
+    jp cli_internal         ; tail call
 
 ; -----------------------------------------------------------------------------
 ; void clear_zone(uint8_t start, uint8_t lines, uint8_t attr)
@@ -525,209 +538,98 @@ cz_done:
 
 ; =============================================================================
 ; SCROLL MAIN ZONE
-; Scrolls lines 3-19 -> 2-18, clears line 19
+; Scrolls lines 4-18 -> 3-17, clears line 18
+; MAIN_START=3, MAIN_END=18
 ; Pure ASM with DI/EI to avoid visual artifacts
 ; =============================================================================
+
+; Helper: apply scanline offset to HL(src) and DE(dst), preserves A=offset
+smz_apply_offset:
+    ld c, a
+    ld a, h
+    add a, c
+    ld h, a
+    ld a, d
+    add a, c
+    ld d, a
+    ld a, c
+    ret
 
 _scroll_main_zone:
     push iy
     di
 
-    ; Fully unrolled scroll: 8 scanlines x 5 blocks = 40 LDIR operations
-    ; No loop, no subroutine calls. All addresses precalculated.
+    ; Looped scroll: 8 scanlines x 5 blocks
     ; Block layout per scanline:
-    ;   B1: rows 3-7 -> 2-6    (160 bytes)  src=40+N:60 dst=40+N:40
+    ;   B1: rows 4-7 -> 3-6    (128 bytes)  src=40+N:80 dst=40+N:60
     ;   B2: row 8 -> 7         (32 bytes)   src=48+N:00 dst=40+N:E0
     ;   B3: rows 9-15 -> 8-14  (224 bytes)  src=48+N:20 dst=48+N:00
     ;   B4: row 16 -> 15       (32 bytes)   src=50+N:00 dst=48+N:E0
-    ;   B5: rows 17-19 -> 16-18 (96 bytes)  src=50+N:20 dst=50+N:00
+    ;   B5: rows 17-18 -> 16-17 (64 bytes)  src=50+N:20 dst=50+N:00
 
-    ; === Scanline 0 ===
-    ld hl, 0x4060
-    ld de, 0x4040
-    ld bc, 160
+    xor a                   ; A = scanline offset (0..7)
+
+smz_scanline_loop:
+    ; Block 1: rows 4-7 -> 3-6
+    ld h, 0x40
+    ld l, 0x80
+    ld d, 0x40
+    ld e, 0x60
+    call smz_apply_offset
+    ld bc, 128
     ldir
-    ld hl, 0x4800
-    ld de, 0x40E0
+
+    ; Block 2: row 8 -> 7
+    ld h, 0x48
+    ld l, 0x00
+    ld d, 0x40
+    ld e, 0xE0
+    call smz_apply_offset
     ld bc, 32
     ldir
-    ld hl, 0x4820
-    ld de, 0x4800
+
+    ; Block 3: rows 9-15 -> 8-14
+    ld h, 0x48
+    ld l, 0x20
+    ld d, 0x48
+    ld e, 0x00
+    call smz_apply_offset
     ld bc, 224
     ldir
-    ld hl, 0x5000
-    ld de, 0x48E0
+
+    ; Block 4: row 16 -> 15
+    ld h, 0x50
+    ld l, 0x00
+    ld d, 0x48
+    ld e, 0xE0
+    call smz_apply_offset
     ld bc, 32
-    ldir
-    ld hl, 0x5020
-    ld de, 0x5000
-    ld bc, 96
     ldir
 
-    ; === Scanline 1 ===
-    ld hl, 0x4160
-    ld de, 0x4140
-    ld bc, 160
-    ldir
-    ld hl, 0x4900
-    ld de, 0x41E0
-    ld bc, 32
-    ldir
-    ld hl, 0x4920
-    ld de, 0x4900
-    ld bc, 224
-    ldir
-    ld hl, 0x5100
-    ld de, 0x49E0
-    ld bc, 32
-    ldir
-    ld hl, 0x5120
-    ld de, 0x5100
-    ld bc, 96
+    ; Block 5: rows 17-18 -> 16-17
+    ld h, 0x50
+    ld l, 0x20
+    ld d, 0x50
+    ld e, 0x00
+    call smz_apply_offset
+    ld bc, 64
     ldir
 
-    ; === Scanline 2 ===
-    ld hl, 0x4260
-    ld de, 0x4240
-    ld bc, 160
-    ldir
-    ld hl, 0x4A00
-    ld de, 0x42E0
-    ld bc, 32
-    ldir
-    ld hl, 0x4A20
-    ld de, 0x4A00
-    ld bc, 224
-    ldir
-    ld hl, 0x5200
-    ld de, 0x4AE0
-    ld bc, 32
-    ldir
-    ld hl, 0x5220
-    ld de, 0x5200
-    ld bc, 96
+    ; Next scanline
+    inc a
+    cp 8
+    jr nz, smz_scanline_loop
+
+    ; Scroll attributes (15 rows: row 4->3 ... row 18->17)
+    ld hl, 0x5880
+    ld de, 0x5860
+    ld bc, 480
     ldir
 
-    ; === Scanline 3 ===
-    ld hl, 0x4360
-    ld de, 0x4340
-    ld bc, 160
-    ldir
-    ld hl, 0x4B00
-    ld de, 0x43E0
-    ld bc, 32
-    ldir
-    ld hl, 0x4B20
-    ld de, 0x4B00
-    ld bc, 224
-    ldir
-    ld hl, 0x5300
-    ld de, 0x4BE0
-    ld bc, 32
-    ldir
-    ld hl, 0x5320
-    ld de, 0x5300
-    ld bc, 96
-    ldir
-
-    ; === Scanline 4 ===
-    ld hl, 0x4460
-    ld de, 0x4440
-    ld bc, 160
-    ldir
-    ld hl, 0x4C00
-    ld de, 0x44E0
-    ld bc, 32
-    ldir
-    ld hl, 0x4C20
-    ld de, 0x4C00
-    ld bc, 224
-    ldir
-    ld hl, 0x5400
-    ld de, 0x4CE0
-    ld bc, 32
-    ldir
-    ld hl, 0x5420
-    ld de, 0x5400
-    ld bc, 96
-    ldir
-
-    ; === Scanline 5 ===
-    ld hl, 0x4560
-    ld de, 0x4540
-    ld bc, 160
-    ldir
-    ld hl, 0x4D00
-    ld de, 0x45E0
-    ld bc, 32
-    ldir
-    ld hl, 0x4D20
-    ld de, 0x4D00
-    ld bc, 224
-    ldir
-    ld hl, 0x5500
-    ld de, 0x4DE0
-    ld bc, 32
-    ldir
-    ld hl, 0x5520
-    ld de, 0x5500
-    ld bc, 96
-    ldir
-
-    ; === Scanline 6 ===
-    ld hl, 0x4660
-    ld de, 0x4640
-    ld bc, 160
-    ldir
-    ld hl, 0x4E00
-    ld de, 0x46E0
-    ld bc, 32
-    ldir
-    ld hl, 0x4E20
-    ld de, 0x4E00
-    ld bc, 224
-    ldir
-    ld hl, 0x5600
-    ld de, 0x4EE0
-    ld bc, 32
-    ldir
-    ld hl, 0x5620
-    ld de, 0x5600
-    ld bc, 96
-    ldir
-
-    ; === Scanline 7 ===
-    ld hl, 0x4760
-    ld de, 0x4740
-    ld bc, 160
-    ldir
-    ld hl, 0x4F00
-    ld de, 0x47E0
-    ld bc, 32
-    ldir
-    ld hl, 0x4F20
-    ld de, 0x4F00
-    ld bc, 224
-    ldir
-    ld hl, 0x5700
-    ld de, 0x4FE0
-    ld bc, 32
-    ldir
-    ld hl, 0x5720
-    ld de, 0x5700
-    ld bc, 96
-    ldir
-
-    ; Scroll attributes (17 rows: row 3->2 ... row 19->18)
-    ld hl, 0x5860           ; Source: attrs for row 3
-    ld de, 0x5840           ; Dest: attrs for row 2
-    ld bc, 544              ; 17 * 32
-    ldir
-
-    ; Clear last line (row 19) pixels + attributes
+    ; Clear last line (row 18) pixels + attributes
     ld a, (_current_attr)
     ld c, a
-    ld a, 19                ; MAIN_END
+    ld a, 18                ; MAIN_END
     call cli_internal
 
     ei
@@ -835,6 +737,17 @@ _g_ps64_y:    defs 1
 _g_ps64_col:  defs 1
 _g_ps64_attr: defs 1
 glyph_buffer: defs 8
+plf_left_buf: defs 8    ; Buffer para nibbles izquierdos (print_line64_fast)
+plf_str_ptr:  defs 2    ; String pointer temporal (print_line64_fast)
+plf_attr_val: defs 1    ; Atributo a escribir (print_line64_fast)
+plf_y_val:    defs 1    ; Fila Y (print_line64_fast)
+cache_scr_base: defs 2  ; Screen base addr cacheada
+cache_atr_base: defs 2  ; Attr base addr cacheada
+cache_row_y:   defs 1   ; Fila Y del cache (0xFF = invalido)
+
+; BPE decompression state
+bpe_rstack:    defs 16  ; Return stack for BPE expansion (8 levels x 2 bytes)
+bpe_rsp:       defs 2   ; Current position in bpe_rstack
 
 SECTION code_user
 
@@ -940,7 +853,7 @@ font64_packed:
     defb 0x22, 0x22, 0x22  ; '|' (124)
     defb 0x72, 0x12, 0x27  ; '}' (125)
     defb 0x36, 0x00, 0x00  ; '~' (126)
-    defb 0x99, 0x96, 0x06  ; DEL (127) - unused, block handled as special case
+    defb 0x99, 0x99, 0x99  ; DEL (127) - solid block for progress bar (LUT[9]=0xFF)
 
 ; -----------------------------------------------------------------------------
 ; unpack_glyph - Decompress one glyph from font64_packed
@@ -950,6 +863,28 @@ font64_packed:
 ; -----------------------------------------------------------------------------
 unpack_glyph:
     sub 32
+    jr nz, unpack_not_space
+    ; --- Space short-circuit: fill glyph_buffer with 0x00 (~50 t-states) ---
+    ld hl, glyph_buffer
+    xor a
+    ld (hl), a
+    inc hl
+    ld (hl), a
+    inc hl
+    ld (hl), a
+    inc hl
+    ld (hl), a
+    inc hl
+    ld (hl), a
+    inc hl
+    ld (hl), a
+    inc hl
+    ld (hl), a
+    inc hl
+    ld (hl), a
+    ld hl, glyph_buffer
+    ret
+unpack_not_space:
     ld l, a
     ld h, 0
     ld c, l
@@ -962,6 +897,13 @@ unpack_glyph:
     ex de, hl            ; DE = source
     ld hl, glyph_buffer  ; HL = destination
 
+    ; Setup alternate registers for LUT access (font_lut is ALIGN 16, no carry)
+    exx
+    ld hl, font_lut      ; H' = font_lut high byte (constant)
+    ld e, l              ; E' = font_lut low byte (base for add)
+    exx
+
+    ; Unpack 3 bytes -> 6 lines (0-5)
     ld b, 3
 ug_loop:
     ld a, (de)
@@ -973,24 +915,22 @@ ug_loop:
     rrca
     rrca
     and 0x0F
-    push hl
-    ld hl, font_lut
-    add a, l
+    exx                  ; switch to alt set (H=lut_hi, E=lut_lo)
+    add a, e             ; A = font_lut_lo + nibble (no carry: ALIGN 16)
     ld l, a
-    ld a, (hl)
-    pop hl
+    ld a, (hl)           ; LUT lookup
+    exx                  ; back to main set
     ld (hl), a
     inc hl
 
     ; Low nibble -> LUT -> line N+1
     ld a, c
     and 0x0F
-    push hl
-    ld hl, font_lut
-    add a, l
+    exx
+    add a, e
     ld l, a
     ld a, (hl)
-    pop hl
+    exx
     ld (hl), a
     inc hl
 
@@ -1007,6 +947,60 @@ ug_loop:
     ret
 
 ; -----------------------------------------------------------------------------
+; Cache helpers: devuelven base de fila screen/attr usando cache si valido.
+; Input: (none, usa _g_ps64_y y cache_row_y)
+; Output: HL = base addr
+; Destroys: AF, DE (solo si cache miss)
+; -----------------------------------------------------------------------------
+p64_get_scr_base:
+    ld a, (cache_row_y)
+    ld hl, _g_ps64_y
+    cp (hl)
+    jr nz, p64_scr_miss
+    ld hl, (cache_scr_base)
+    ret
+p64_scr_miss:
+    ld a, (hl)             ; A = g_ps64_y
+    add a, a
+    ld l, a
+    ld h, 0
+    ld de, asm_row_base
+    add hl, de
+    ld a, (hl)
+    inc hl
+    ld h, (hl)
+    ld l, a                ; HL = screen row base
+    ld (cache_scr_base), hl
+    ; Actualizar cache_row_y y calcular attr base tambien
+    ld a, (_g_ps64_y)
+    ld (cache_row_y), a
+    push hl                ; Guardar screen base
+    add a, a
+    ld l, a
+    ld h, 0
+    ld de, attr_row_base
+    add hl, de
+    ld a, (hl)
+    inc hl
+    ld h, (hl)
+    ld l, a
+    ld (cache_atr_base), hl
+    pop hl                 ; Devolver screen base
+    ret
+
+p64_get_atr_base:
+    ld a, (cache_row_y)
+    ld hl, _g_ps64_y
+    cp (hl)
+    jr nz, p64_atr_miss
+    ld hl, (cache_atr_base)
+    ret
+p64_atr_miss:
+    call p64_get_scr_base  ; Esto cachea ambos
+    ld hl, (cache_atr_base)
+    ret
+
+; -----------------------------------------------------------------------------
 ; void print_str64_char(uint8_t ch) __z88dk_fastcall
 ; Draw a 4-pixel character at (g_ps64_y, g_ps64_col) with g_ps64_attr
 ; Input: L = ASCII character
@@ -1019,24 +1013,55 @@ _print_str64_char:
     cp 127
     jr z, p64_block         ; Special case: block char for progress bar
     cp 128
-    jr c, p64_valid
+    jr c, p64_calc_font
 p64_use_space:
     ld a, 32
-p64_valid:
+
+p64_calc_font:
+    ; --- Space short-circuit: borrado directo sin unpack_glyph ---
+    cp 32
+    jr nz, p64_not_space
+
+    ; Obtener screen base (cache o lookup)
+    call p64_get_scr_base   ; HL = screen row base
+    ld a, (_g_ps64_col)
+    ld b, a
+    srl a
+    ld e, a
+    ld d, 0
+    add hl, de              ; HL = screen address
+
+    bit 0, b
+    jr nz, p64_space_right
+
+    ; Espacio lado izquierdo: AND 0x0F en 8 scanlines
+    ld b, 8
+p64_space_left:
+    ld a, (hl)
+    and 0x0F
+    ld (hl), a
+    inc h
+    djnz p64_space_left
+    jr p64_set_attr
+
+p64_space_right:
+    ; Espacio lado derecho: AND 0xF0 en 8 scanlines
+    ld b, 8
+p64_space_right_loop:
+    ld a, (hl)
+    and 0xF0
+    ld (hl), a
+    inc h
+    djnz p64_space_right_loop
+    jr p64_set_attr
+
+p64_not_space:
+    ; Descomprimir glifo a glyph_buffer
     call unpack_glyph       ; A = char, returns HL = glyph_buffer
     push hl                 ; Save font source
 
-    ; Calculate screen address from asm_row_base[y]
-    ld a, (_g_ps64_y)
-    add a, a
-    ld l, a
-    ld h, 0
-    ld de, asm_row_base
-    add hl, de
-    ld a, (hl)
-    inc hl
-    ld h, (hl)
-    ld l, a                 ; HL = row base address
+    ; Obtener screen base (cache o lookup)
+    call p64_get_scr_base   ; HL = screen row base
 
     ; Add col/2 for physical X
     ld a, (_g_ps64_col)
@@ -1095,17 +1120,8 @@ p64_right_loop:
 ; --- Block character (0x7F) for progress bar ---
 ; Pattern: 0xE0 (left) or 0x0E (right), scanlines 0,7 clear, 1-6 filled
 p64_block:
-    ; Calculate screen address
-    ld a, (_g_ps64_y)
-    add a, a
-    ld l, a
-    ld h, 0
-    ld de, asm_row_base
-    add hl, de
-    ld a, (hl)
-    inc hl
-    ld h, (hl)
-    ld l, a
+    ; Obtener screen base (cache o lookup)
+    call p64_get_scr_base   ; HL = screen row base
 
     ld a, (_g_ps64_col)
     ld b, a
@@ -1149,27 +1165,188 @@ p64_block_fill:
     ld (hl), a
 
 p64_set_attr:
-    ; Attribute: 0x5800 + y*32 + col/2
-    ld a, (_g_ps64_y)
-    ld l, a
-    ld h, 0
-    add hl, hl              ; *2
-    add hl, hl              ; *4
-    add hl, hl              ; *8
-    add hl, hl              ; *16
-    add hl, hl              ; *32
-    ld de, 0x5800
-    add hl, de
+    ; Obtener attr base (cache o lookup)
+    call p64_get_atr_base   ; HL = attr row base
+
     ld a, (_g_ps64_col)
     srl a
-    ld e, a
-    ld d, 0
-    add hl, de
+    ld c, a
+    ld b, 0
+    add hl, bc
 
+    ; Escribir atributo solo si cambia
     ld a, (_g_ps64_attr)
     cp (hl)
     ret z                   ; Skip if same attr already
     ld (hl), a
+    ret
+
+; -----------------------------------------------------------------------------
+; void print_line64_fast(uint8_t y, const char *s, uint8_t attr)
+; __z88dk_callee
+; Renderiza una linea completa de 64 columnas procesando pares de caracteres.
+; Escribe bytes completos (sin AND/OR de preservacion), attr fill al final.
+; ~40-50% mas rapido que 64 llamadas individuales a print_str64_char.
+;
+; sccz80 stack layout (args pushed left-to-right):
+;   SP+2 = attr (last pushed)
+;   SP+4 = s pointer (low, high)
+;   SP+6 = y
+; After push ix: IX+0=saved IX, IX+2=ret addr, IX+4=attr, IX+6=s, IX+8=y
+; -----------------------------------------------------------------------------
+_print_line64_fast:
+    push ix
+    ld ix, 0
+    add ix, sp
+
+    ; --- Calcular screen_row_base[y] una sola vez ---
+    ld a, (ix+8)           ; y
+    add a, a
+    ld l, a
+    ld h, 0
+    ld bc, asm_row_base
+    add hl, bc
+    ld c, (hl)
+    inc hl
+    ld b, (hl)             ; BC = screen base addr de la fila
+
+    ; Guardar attr y string pointer
+    ld a, (ix+4)
+    ld (plf_attr_val), a   ; attr para despues
+    ld e, (ix+6)
+    ld d, (ix+7)           ; DE = string pointer
+
+    ; Guardar y para attr fill al final
+    ld a, (ix+8)
+    ld (plf_y_val), a
+
+    push bc                ; Guardar screen base en stack
+    pop hl                 ; HL = screen addr (col 0, scanline 0)
+
+    ld b, 32               ; 32 pares de columnas (= 64 cols)
+
+plf_pair_loop:
+    push bc                ; Guardar contador de pares
+    push hl                ; Guardar screen addr del byte actual
+
+    ; --- Leer char izquierdo ---
+    ld a, (de)
+    or a
+    jr z, plf_left_pad     ; NUL: no avanzar puntero, usar espacio
+    inc de                 ; Avanzar puntero
+    cp 32
+    jr c, plf_left_space   ; char < 32: tratar como espacio
+    cp 128
+    jr c, plf_left_ok      ; char 32-127: OK
+plf_left_space:
+    ld a, 32
+    jr plf_left_ok
+plf_left_pad:
+    ld a, 32
+plf_left_ok:
+    ; Guardar string pointer antes de unpack_glyph (destruye DE)
+    ex de, hl
+    ld (plf_str_ptr), hl
+    ex de, hl              ; A sigue teniendo el char
+    call unpack_glyph      ; HL = glyph_buffer, destruye AF/BC/DE
+    ; Copiar nibbles altos a plf_left_buf
+    ld hl, glyph_buffer
+    ld de, plf_left_buf
+    ld b, 8
+plf_save_left:
+    ld a, (hl)
+    and 0xF0               ; Solo nibble alto (lado izquierdo)
+    ld (de), a
+    inc hl
+    inc de
+    djnz plf_save_left
+
+    ; --- Leer char derecho ---
+    ld hl, (plf_str_ptr)
+    ex de, hl              ; DE = string pointer
+    ld a, (de)
+    or a
+    jr z, plf_right_pad    ; NUL: no avanzar puntero, usar espacio
+    inc de                 ; Avanzar puntero
+    cp 32
+    jr c, plf_right_space  ; char < 32: tratar como espacio
+    cp 128
+    jr c, plf_right_ok     ; char 32-127: OK
+plf_right_space:
+    ld a, 32
+    jr plf_right_ok
+plf_right_pad:
+    ld a, 32
+plf_right_ok:
+    ex de, hl
+    ld (plf_str_ptr), hl
+    ex de, hl              ; A sigue teniendo el char
+    call unpack_glyph      ; HL = glyph_buffer, destruye AF/BC/DE
+
+    ; --- Combinar y escribir 8 scanlines ---
+    ; Scanline 0 = blank (matches print_str64_char behavior)
+    pop hl                 ; HL = screen addr
+    push hl                ; Re-guardar para avanzar despues
+
+    ld (hl), 0             ; Scanline 0: clear
+    inc h                  ; Avanzar a scanline 1
+
+    ld de, glyph_buffer
+    ld ix, plf_left_buf
+    ld b, 7                ; Scanlines 1-7: glyph data
+plf_write_loop:
+    ld a, (ix+0)           ; Nibble alto del char izquierdo
+    ld c, a
+    ld a, (de)             ; Byte del char derecho
+    and 0x0F               ; Solo nibble bajo (lado derecho)
+    or c                   ; Combinar: left_high | right_low
+    ld (hl), a             ; Escribir byte completo a pantalla
+    inc ix
+    inc de
+    inc h                  ; Siguiente scanline
+    djnz plf_write_loop
+
+    ld hl, (plf_str_ptr)
+    ex de, hl              ; DE = string pointer para siguiente iteracion
+    pop hl                 ; Recuperar screen addr
+    inc hl                 ; Siguiente byte (siguiente par de columnas)
+
+    pop bc                 ; Recuperar contador de pares
+    djnz plf_pair_loop
+
+    ; --- Attr fill: escribir 32 atributos de golpe ---
+    ld a, (plf_y_val)
+    add a, a
+    ld l, a
+    ld h, 0
+    ld bc, attr_row_base
+    add hl, bc
+    ld c, (hl)
+    inc hl
+    ld b, (hl)
+    ; BC = attr base addr
+    ld h, b
+    ld l, c                ; HL = attr addr
+    ld a, (plf_attr_val)
+    ld b, 32
+plf_attr_fill:
+    ld (hl), a
+    inc hl
+    djnz plf_attr_fill
+
+    ; Actualizar globals para consistencia
+    ld a, 64
+    ld (_g_ps64_col), a
+    ld a, (plf_y_val)
+    ld (_g_ps64_y), a
+    ld a, (plf_attr_val)
+    ld (_g_ps64_attr), a
+
+    ; Invalidar cache (y cambio)
+    ld a, 0xFF
+    ld (cache_row_y), a
+
+    pop ix
     ret
 
 ; =============================================================================
@@ -1183,9 +1360,9 @@ p64_set_attr:
 _main_putc:
     ld a, l
     cp 13
-    jp z, _main_newline
+    jr z, _main_newline
     cp 10
-    jp z, _main_newline
+    jr z, _main_newline
     cp 32
     ret c                   ; Ignore control chars < 32
 
@@ -1228,11 +1405,10 @@ _main_newline:
 
     ; main_line++, check overflow
     ld a, (_main_line)
-    cp 19                   ; MAIN_END
+    cp 18                   ; MAIN_END
     jr c, mn_inc
     ; At bottom: scroll, keep main_line = MAIN_END
-    call _scroll_main_zone
-    ret
+    jp _scroll_main_zone    ; tail call
 
 mn_inc:
     inc a
@@ -1242,35 +1418,310 @@ mn_inc:
 ; -----------------------------------------------------------------------------
 ; void main_puts(const char *s) __z88dk_fastcall
 ; Input: HL = string pointer
+; BPE-aware: bytes >= 0x80 are expanded from bpe_dict using a return stack.
 ; -----------------------------------------------------------------------------
 _main_puts:
-    ld a, (hl)
-    or a
-    ret z
+    ; Initialize BPE return stack (empty)
     push hl
+    ld hl, bpe_rstack
+    ld (bpe_rsp), hl
+    pop hl
+    ; Use DE as string pointer (frees HL for other uses)
+    ex de, hl               ; DE = string pointer
+
+puts_loop:
+    ld a, (de)
+    or a
+    jr z, puts_bpe_pop      ; 0x00: end of string or end of BPE dict entry
+
+    cp 0x80
+    jr nc, puts_bpe_expand  ; >= 0x80: BPE token
+
+    ; Normal ASCII char: render via main_putc
+    push de
     ld l, a
     call _main_putc
-    pop hl
+    pop de
+    inc de
+    jr puts_loop
+
+; --- BPE expansion ---
+; Token >= 0x80 in A: push continuation (DE+1) to BPE stack,
+; set DE to dict entry (3 bytes: b1, b2, 0x00). Loop reads from dict.
+; On null, pops continuation and resumes original string.
+puts_bpe_expand:
+    inc de                  ; advance past the token byte
+    ; Push continuation address (DE) onto BPE return stack
+    push hl                 ; save HL temporarily
+    ld hl, (bpe_rsp)
+    ld (hl), e
     inc hl
-    jr _main_puts
+    ld (hl), d
+    inc hl
+    ld (bpe_rsp), hl
+    pop hl                  ; restore HL
+    ; Calculate dict entry: bpe_dict + (token - 0x80) * 3
+    sub 0x80
+    ld l, a
+    ld h, 0
+    ld c, l
+    ld b, h                 ; BC = (token - 0x80)
+    add hl, hl              ; * 2
+    add hl, bc              ; * 3
+    ld bc, bpe_dict
+    add hl, bc
+    ex de, hl               ; DE = &bpe_dict[(token-0x80)*3]
+    jr puts_loop            ; continue reading from dict entry
+
+puts_bpe_pop:
+    ; Null byte: end of string or end of BPE dict entry
+    ; Check if BPE stack has entries
+    push hl
+    ld hl, (bpe_rsp)
+    ld bc, bpe_rstack
+    or a                    ; clear carry
+    sbc hl, bc
+    pop hl
+    jr z, puts_done         ; stack empty -> real end of string
+    ; Pop continuation address from BPE stack
+    push hl
+    ld hl, (bpe_rsp)
+    dec hl
+    ld d, (hl)
+    dec hl
+    ld e, (hl)
+    ld (bpe_rsp), hl
+    pop hl
+    jr puts_loop            ; resume original string
+
+puts_done:
+    ret
+
+; =============================================================================
+; DOUBLE-HEIGHT BANNER CHARACTER
+; =============================================================================
+;
+; void draw_big_char(uint8_t ch) __z88dk_fastcall
+; Renders a character at double height across rows Y and Y+1.
+; Each glyph line is doubled (rendered on 2 consecutive scanlines).
+; Layout per row:
+;   Top  (Y)  : scanlines 0-1 blank, 2-3 glyph[0], 4-5 glyph[1], 6-7 glyph[2]
+;   Bot (Y+1) : scanlines 0-1 glyph[3], 2-3 glyph[4], 4-5 glyph[5], 6-7 blank
+;
+; Input: L = ASCII character
+; Uses globals: _g_ps64_y (top row), _g_ps64_col
+; Attributes are NOT set (caller must clear_line both rows beforehand).
+; Destroys: AF, BC, DE, HL
+; =============================================================================
+_draw_big_char:
+    ld a, l
+    cp 32
+    jr c, dbc_force_space
+    cp 128
+    jr c, dbc_valid
+dbc_force_space:
+    ld a, 32
+dbc_valid:
+    call unpack_glyph       ; HL = glyph_buffer (8 bytes, 0-5 data, 6-7 zero)
+    ex de, hl               ; DE = glyph source
+
+    ; --- Lookup screen base for top row (Y) ---
+    ld a, (_g_ps64_y)
+    add a, a                ; *2 for word index
+    ld l, a
+    ld h, 0
+    ld bc, asm_row_base
+    add hl, bc
+    ld c, (hl)
+    inc hl
+    ld b, (hl)              ; BC = screen base for row Y
+    inc hl
+    ld (dbc_row1_ptr), hl   ; Save pointer to asm_row_base[Y+1]
+
+    ; --- Add column offset ---
+    ld a, (_g_ps64_col)
+    srl a                   ; col/2 for physical byte
+    ld l, a
+    ld h, 0
+    add hl, bc              ; HL = screen address for top row
+
+    ; --- Branch on column parity ---
+    ld a, (_g_ps64_col)
+    bit 0, a
+    jr nz, dbc_top_right
+
+    ; === TOP ROW, LEFT NIBBLE (even column) ===
+    ; Scanlines 0-1: clear left nibble
+    ld a, (hl)
+    and 0x0F
+    ld (hl), a
+    inc h
+    ld a, (hl)
+    and 0x0F
+    ld (hl), a
+    inc h
+    ; Scanlines 2-7: 3 glyph lines, each doubled
+    ld b, 3
+dbc_tl_loop:
+    ld a, (de)
+    and 0xF0
+    ld c, a
+    ld a, (hl)
+    and 0x0F
+    or c
+    ld (hl), a
+    inc h
+    ld a, (hl)
+    and 0x0F
+    or c
+    ld (hl), a
+    inc h
+    inc de
+    djnz dbc_tl_loop
+    jr dbc_bottom
+
+dbc_top_right:
+    ; === TOP ROW, RIGHT NIBBLE (odd column) ===
+    ; Scanlines 0-1: clear right nibble
+    ld a, (hl)
+    and 0xF0
+    ld (hl), a
+    inc h
+    ld a, (hl)
+    and 0xF0
+    ld (hl), a
+    inc h
+    ; Scanlines 2-7: 3 glyph lines, each doubled
+    ld b, 3
+dbc_tr_loop:
+    ld a, (de)
+    and 0x0F
+    ld c, a
+    ld a, (hl)
+    and 0xF0
+    or c
+    ld (hl), a
+    inc h
+    ld a, (hl)
+    and 0xF0
+    or c
+    ld (hl), a
+    inc h
+    inc de
+    djnz dbc_tr_loop
+
+dbc_bottom:
+    ; --- Lookup screen base for bottom row (Y+1) ---
+    push de                 ; Save glyph ptr (now at byte 3)
+    ld hl, (dbc_row1_ptr)   ; HL = pointer into asm_row_base for Y+1
+    ld e, (hl)
+    inc hl
+    ld d, (hl)              ; DE = screen base for row Y+1
+    ld a, (_g_ps64_col)
+    srl a
+    ld l, a
+    ld h, 0
+    add hl, de              ; HL = screen address for bottom row
+    pop de                  ; DE = glyph source (byte 3)
+
+    ld a, (_g_ps64_col)
+    bit 0, a
+    jr nz, dbc_bot_right
+
+    ; === BOTTOM ROW, LEFT NIBBLE ===
+    ; Scanlines 0-5: 3 glyph lines, each doubled
+    ld b, 3
+dbc_bl_loop:
+    ld a, (de)
+    and 0xF0
+    ld c, a
+    ld a, (hl)
+    and 0x0F
+    or c
+    ld (hl), a
+    inc h
+    ld a, (hl)
+    and 0x0F
+    or c
+    ld (hl), a
+    inc h
+    inc de
+    djnz dbc_bl_loop
+    ; Scanlines 6-7: clear left nibble
+    ld a, (hl)
+    and 0x0F
+    ld (hl), a
+    inc h
+    ld a, (hl)
+    and 0x0F
+    ld (hl), a
+    ret
+
+dbc_bot_right:
+    ; === BOTTOM ROW, RIGHT NIBBLE ===
+    ; Scanlines 0-5: 3 glyph lines, each doubled
+    ld b, 3
+dbc_br_loop:
+    ld a, (de)
+    and 0x0F
+    ld c, a
+    ld a, (hl)
+    and 0xF0
+    or c
+    ld (hl), a
+    inc h
+    ld a, (hl)
+    and 0xF0
+    or c
+    ld (hl), a
+    inc h
+    inc de
+    djnz dbc_br_loop
+    ; Scanlines 6-7: clear right nibble
+    ld a, (hl)
+    and 0xF0
+    ld (hl), a
+    inc h
+    ld a, (hl)
+    and 0xF0
+    ld (hl), a
+    ret
+
+; Temporary storage for row Y+1 pointer into asm_row_base
+dbc_row1_ptr: defw 0
 
 ; =============================================================================
 ; void draw_badge_dither(uint8_t count) __z88dk_fastcall
-; Draws triangle dither pattern for the banner badge on row 0.
+; Draws triangle dither pattern for the banner badge on rows 0 AND 1.
 ; count in L = number of physical cells (e.g. 4)
 ; phys_x = 32 - count (right-aligned)
 ; Attributes must be set by caller before calling this.
 ; =============================================================================
 _draw_badge_dither:
+    ld a, l
+    push af                 ; Save count for row 1
     ld b, l                 ; B = cell count
     ld a, 32
     sub l
     ld c, a                 ; C = phys_x = 32 - count
-    ld hl, 0x4000           ; screen base row 0
+
+    ; Row 0: screen base 0x4000
+    ld hl, 0x4000
     ld e, c
     ld d, 0
-    add hl, de              ; HL = address of first cell
+    add hl, de
+    call dbd_row
 
+    ; Row 1: screen base 0x4020
+    pop af
+    ld b, a                 ; B = cell count (restored)
+    ld hl, 0x4020
+    ld e, c                 ; C still = phys_x (preserved by dbd_row)
+    ld d, 0
+    add hl, de
+    ; fall through to dbd_row (ret returns to caller)
+
+dbd_row:
 dbd_cell_loop:
     push bc
     push hl
@@ -1345,3 +1796,266 @@ _esx_not_present:
 
 esx_save_sp:     defw 0
 esx_save_errsp:  defw 0
+
+; =============================================================================
+; void main_print(const char *s) __z88dk_fastcall
+; Fast-path: if main_col==0 and string <= 64 chars, renders the entire line
+; with print_line64_fast (pair processing, no AND/OR masking = much faster).
+; Otherwise falls back to main_puts (char by char).
+; Always calls main_newline at the end.
+; Input: HL = string pointer
+; =============================================================================
+_main_print_asm:
+    ld a, (_main_col)
+    or a
+    jr nz, mp_slow
+
+    ; Quick length scan: fits in SCREEN_COLS (64)?
+    push hl                 ; save s
+    ld d, h
+    ld e, l                 ; DE = scan ptr
+    ld b, 65                ; max 64+1 iterations
+mp_scan:
+    ld a, (de)
+    or a
+    jr z, mp_fast           ; NUL found = fits on one line
+    cp 0x80
+    jr nc, mp_has_bpe       ; BPE token found: must use slow path
+    inc de
+    djnz mp_scan
+    ; String > 64 chars: slow path
+    pop hl
+    jr mp_slow
+
+mp_has_bpe:
+    ; String has BPE tokens: must decompress via slow path
+    pop hl
+    jr mp_slow
+
+mp_fast:
+    pop hl                  ; HL = original s
+    ; Call print_line64_fast(main_line, s, current_attr)
+    ; sccz80 cdecl: args pushed left-to-right (y first, s second, attr last)
+    ld a, (_main_line)
+    ld c, a
+    ld b, 0
+    push bc                 ; arg1: y (pushed first)
+    push hl                 ; arg2: s
+    ld a, (_current_attr)
+    ld c, a
+    push bc                 ; arg3: attr (pushed last)
+    call _print_line64_fast
+    pop bc
+    pop bc
+    pop bc                  ; clean 6 bytes
+    jp _main_newline        ; tail call
+
+mp_slow:
+    call _main_puts         ; HL = s (fastcall)
+    jp _main_newline        ; tail call
+
+; =============================================================================
+; void main_puts2(const char *a, const char *b)
+; Print two strings consecutively (saves code at call sites)
+; sccz80 cdecl: SP+2 = b (last pushed), SP+4 = a (first pushed)
+; =============================================================================
+_main_puts2:
+    pop bc          ; ret addr
+    pop hl          ; b (second string, pushed last)
+    pop de          ; a (first string, pushed first)
+    push de
+    push hl
+    push bc
+
+    push hl         ; save b
+    ex de, hl       ; HL = a
+    call _main_puts ; print a (fastcall, HL = string)
+    pop hl          ; HL = b
+    jp _main_puts   ; tail call: print b and return
+
+; =============================================================================
+; void utf8_to_ascii(char *s) __z88dk_fastcall
+; Convert UTF-8 string to ASCII in-place
+; Input: HL = string pointer (modified in-place)
+; Handles Latin-1 Supplement (C2-C3 sequences): accented vowels, n-tilde, etc.
+; =============================================================================
+_utf8_to_ascii:
+    push hl                 ; Save start for return
+    ld d, h
+    ld e, l                 ; DE = write ptr, HL = read ptr
+
+u8a_loop:
+    ld a, (hl)
+    or a
+    jp z, u8a_done
+
+    cp 0x80
+    jr c, u8a_copy          ; 00-7F: ASCII, copy
+
+    cp 0xC2
+    jr c, u8a_skip1         ; 80-C1: invalid continuation
+
+    cp 0xC4
+    jr c, u8a_latin1        ; C2-C3: Latin-1 Supplement
+
+    cp 0xE0
+    jr c, u8a_skip2         ; C4-DF: 2-byte, skip
+
+    cp 0xF0
+    jr c, u8a_skip3         ; E0-EF: 3-byte, skip
+
+    ; F0+: 4-byte sequence
+    inc hl
+    ld a, (hl) : or a : jr z, u8a_done
+    inc hl
+    ld a, (hl) : or a : jr z, u8a_done
+    inc hl
+    ld a, (hl) : or a : jr z, u8a_done
+    inc hl
+    ld a, '?'
+    jr u8a_store
+
+u8a_skip3:
+    inc hl
+    ld a, (hl) : or a : jr z, u8a_done
+u8a_skip2:
+    inc hl
+    ld a, (hl) : or a : jr z, u8a_done
+u8a_skip1:
+    inc hl
+    ld a, '?'
+    jr u8a_store
+
+u8a_copy:
+    ld (de), a
+    inc hl
+    inc de
+    jr u8a_loop
+
+u8a_latin1:
+    ; A = C2 or C3
+    ld b, a                 ; B = first byte
+    inc hl
+    ld a, (hl)
+    or a
+    jr z, u8a_done
+    ld c, a                 ; C = second byte (80-BF)
+    inc hl
+
+    ; Verify continuation byte (80-BF)
+    ld a, c
+    and 0xC0
+    cp 0x80
+    jr nz, u8a_invalid
+
+    ld a, b
+    cp 0xC3
+    jr z, u8a_c3
+
+    ; C2: codepoints 80-BF (symbols)
+    ld a, c
+    cp 0xA1                 ; inverted !
+    ld a, '!'
+    jr z, u8a_store
+    ld a, c
+    cp 0xBF                 ; inverted ?
+    ld a, '?'
+    jr z, u8a_store
+    ld a, c
+    cp 0xAB                 ; <<
+    ld a, '<'
+    jr z, u8a_store
+    ld a, c
+    cp 0xBB                 ; >>
+    ld a, '>'
+    jr z, u8a_store
+    ld a, ' '               ; rest -> space
+    jr u8a_store
+
+u8a_c3:
+    ; C3: codepoints C0-FF (accented vowels, n-tilde, etc.)
+    ; Table index = C & 3F
+    ld a, c
+    and 0x3F
+    ld c, a
+    ld b, 0
+    push hl
+    ld hl, u8a_tbl_c0
+    add hl, bc
+    ld a, (hl)
+    pop hl
+    jr u8a_store
+
+u8a_invalid:
+    ld a, '?'
+
+u8a_store:
+    ld (de), a
+    inc de
+    jp u8a_loop
+
+u8a_done:
+    xor a
+    ld (de), a
+    pop hl
+    ret
+
+; Lookup table: Unicode C0-FF -> ASCII (64 bytes)
+u8a_tbl_c0:
+    defb 'A','A','A','A','A','A','A','C'  ; C0-C7: ÀÁÂÃÄÅÆÇ
+    defb 'E','E','E','E','I','I','I','I'  ; C8-CF: ÈÉÊËÌÍÎÏ
+    defb 'D','N','O','O','O','O','O','x'  ; D0-D7: ÐÑÒÓÔÕÖ×
+    defb 'O','U','U','U','U','Y','T','s'  ; D8-DF: ØÙÚÛÜÝÞß
+    defb 'a','a','a','a','a','a','a','c'  ; E0-E7: àáâãäåæç
+    defb 'e','e','e','e','i','i','i','i'  ; E8-EF: èéêëìíîï
+    defb 'o','n','o','o','o','o','o','/'  ; F0-F7: ðñòóôõö÷
+    defb 'o','u','u','u','u','y','t','y'  ; F8-FF: øùúûüýþÿ
+
+; =============================================================================
+; COPT HELPER ROUTINES
+; Peephole optimizer replaces common patterns with calls to these helpers.
+; Adapted from SpectalkZX.
+; =============================================================================
+
+; -----------------------------------------------------------------------------
+; hl_mul32: HL = HL * 32
+; Replaces 5x add hl,hl (5 bytes) with call (3 bytes) saving 2 bytes/site
+; -----------------------------------------------------------------------------
+_hl_mul32:
+    add hl, hl
+    add hl, hl
+    add hl, hl
+    add hl, hl
+    add hl, hl
+    ret
+
+; -----------------------------------------------------------------------------
+; l_mul32: zero-extend L to HL, then HL *= 32
+; copt replaces: ld h,0 / 5x add hl,hl (7 bytes -> 3 bytes call)
+; sccz80 generates "ld h,0" (not "ld h,0x00" like SDCC)
+; -----------------------------------------------------------------------------
+_l_mul32:
+    ld h, 0
+    jp _hl_mul32
+
+; -----------------------------------------------------------------------------
+; rx_pos_reset: rx_pos = 0
+; sccz80 generates: ld hl,0 / ld a,l / ld (_rx_pos),a (7 bytes -> 3 bytes call)
+; Saves 4 bytes per site
+; -----------------------------------------------------------------------------
+_rx_pos_reset:
+    xor a
+    ld (_rx_pos), a
+    ld h, a              ; preserve HL=0 contract from replaced pattern
+    ld l, a
+    ret
+
+; =============================================================================
+; BPE DICTIONARY
+; Auto-generated by tools/bpe_compress.py. Each entry: 2 expansion bytes + 0x00.
+; Token 0x80 = entry 0, token 0x81 = entry 1, etc.
+; When no BPE is active, this section is empty (just a label).
+; =============================================================================
+bpe_dict:
+; --- BPE DICT START (replaced by bpe_compress.py) ---
+; --- BPE DICT END ---

@@ -7,24 +7,36 @@
 // ============================================================================
 
 extern void draw_badge_dither(uint8_t count) __z88dk_fastcall;
-
 static void draw_banner(void)
 {
-    uint8_t *attr;
-    uint8_t i;
+    // Identical to SpectalkZX default theme banner
+    // Row 0: BRIGHT, Row 1: dim (gradient effect)
+    clear_line(0, ATTR_BANNER | 0x40);
+    clear_line(1, ATTR_BANNER & 0xBF);
 
-    clear_line(BANNER_START, ATTR_BANNER);
-    print_str64(BANNER_START, 1, "BITSTREAM " APP_VERSION " - FTP Client / " UART_INTERFACE, ATTR_BANNER);
+    // Double-height banner text across rows 0-1
+    print_big_str(0, 0, "BITSTREAM " APP_VERSION " - FTP Client / " UART_INTERFACE);
 
-    // Badge: 4 physical cells at cols 28-31
-    // Transition: Banner(blue) → Red → Yellow → Green → Blue(banner)
-    attr = (uint8_t *)(0x5800 + BANNER_START * 32 + 28);
-    attr[0] = PAPER_BLUE | INK_RED | BRIGHT;
-    attr[1] = PAPER_RED | INK_YELLOW | BRIGHT;
-    attr[2] = PAPER_YELLOW | INK_GREEN | BRIGHT;
-    attr[3] = PAPER_GREEN | INK_BLUE | BRIGHT;
+    // Dithered badge: 5 cells (cols 27-31), SpectalkZX default theme values
+    // Row 0: bridge(blk/blk), blk/red, red/yel, yel/grn, grn/blu
+    *(uint8_t *)(0x5800 + 27) = 0x40;  // sb: BRIGHT|PAPER_BLACK|INK_BLACK
+    *(uint8_t *)(0x5800 + 28) = 0x42;  // b1: BRIGHT|PAPER_BLACK|INK_RED
+    *(uint8_t *)(0x5800 + 29) = 0x56;  // b2: BRIGHT|PAPER_RED|INK_YELLOW
+    *(uint8_t *)(0x5800 + 30) = 0x74;  // b3: BRIGHT|PAPER_YELLOW|INK_GREEN
+    *(uint8_t *)(0x5800 + 31) = 0x61;  // b4: BRIGHT|PAPER_GREEN|INK_BLUE
 
-    draw_badge_dither(4);
+    // Row 1: staggered one position (diagonal cascade)
+    *(uint8_t *)(0x5820 + 27) = 0x42;  // b1
+    *(uint8_t *)(0x5820 + 28) = 0x56;  // b2
+    *(uint8_t *)(0x5820 + 29) = 0x74;  // b3
+    *(uint8_t *)(0x5820 + 30) = 0x61;  // b4
+    *(uint8_t *)(0x5820 + 31) = 0x48;  // end: BRIGHT|PAPER_BLUE|INK_BLACK
+
+    draw_badge_dither(5);
+
+    // 1px separator line below banner (row 2, scanline 0)
+    memset((uint8_t *)0x5840, ATTR_MAIN_BG, 32);   // attrs: INK_WHITE on PAPER_BLACK
+    memset((uint8_t *)0x4040, 0xFF, 32);            // pixels: white line
 }
 
 static void init_screen(void)
@@ -33,16 +45,16 @@ static void init_screen(void)
     zx_border(INK_BLACK);
     for (i = 0; i < 24; i++) clear_line(i, PAPER_BLACK);
 
-    clear_line(BANNER_START, ATTR_BANNER);
     draw_banner();
-
-    clear_line(1, ATTR_MAIN_BG);
 
     clear_zone(MAIN_START, MAIN_LINES, ATTR_MAIN_BG);
 
-    clear_line(20, ATTR_MAIN_BG);
+    clear_line(19, ATTR_MAIN_BG);              // separator
 
-    clear_line(STATUS_LINE, ATTR_STATUS);
+    // Status bar: double height on rows 20-21
+    clear_line(20, ATTR_STATUS);
+    clear_line(21, ATTR_STATUS);
+
     clear_zone(INPUT_START, INPUT_LINES, ATTR_INPUT_BG);
 
     main_line = MAIN_START;
@@ -105,7 +117,6 @@ static void print_intro_banner(void)
 
     main_print("BitStream " APP_VERSION " - FTP Client / " UART_INTERFACE);
     main_print("(C) 2026 M. Ignacio Monge Garcia");
-    print_char_line(32, '-');
 }
 
 // ~4 minutes at 50fps = 12000 frames
@@ -134,7 +145,7 @@ void main(void)
     main_newline();
 
     current_attr = ATTR_LOCAL;
-    main_print("Type HELP or !HELP. EDIT cancels.");
+    main_print("Type HELP or !HELP. BREAK cancels.");
     main_newline();
 
     redraw_input_from(0);
@@ -153,8 +164,8 @@ void main(void)
         }
 
         {
-            static uint8_t prev_caps_mode = 0;
-            static uint8_t prev_shift_state = 0;
+            static uint8_t prev_caps_mode;
+            static uint8_t prev_shift_state;
 
             check_caps_toggle();
 
@@ -165,9 +176,9 @@ void main(void)
                 prev_caps_mode = caps_lock_mode;
                 prev_shift_state = curr_shift_state;
 
-                uint16_t char_abs = cursor_pos + 2;
-                uint8_t cur_row = INPUT_START + (char_abs / SCREEN_COLS);
-                uint8_t cur_col = char_abs % SCREEN_COLS;
+                uint16_t char_abs = cursor_pos + input_prompt_len;
+                uint8_t cur_row = INPUT_START + (char_abs >> 6);
+                uint8_t cur_col = char_abs & 63;
                 draw_cursor_underline(cur_row, cur_col);
             }
         }
@@ -204,8 +215,7 @@ void main(void)
                 history_add(cmd_copy, line_len);
 
                 current_attr = ATTR_USER;
-                main_puts("> ");
-                main_puts(cmd_copy);
+                main_puts2("> ", cmd_copy);
                 main_newline();
 
                 input_clear();

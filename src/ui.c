@@ -6,7 +6,7 @@
 // UI RENDER OPTIMIZATION: Dirty lines (deferred status bar redraw)
 // ============================================================================
 
-static uint8_t status_bar_dirty = 0;
+static uint8_t status_bar_dirty;
 
 // Se llama desde el bucle principal para aplicar cambios pendientes
 static void ui_flush_dirty(void)
@@ -29,6 +29,7 @@ static void draw_status_bar(void)
 
 static uint8_t input_cache_char[INPUT_LINES][SCREEN_COLS];
 static uint8_t input_cache_attr[INPUT_LINES][32];
+static uint8_t* attr_addr(uint8_t y, uint8_t phys_x);
 
 static void input_cache_invalidate_cell(uint8_t y, uint8_t col)
 {
@@ -53,8 +54,11 @@ static void put_char64_input_cached(uint8_t y, uint8_t col, uint8_t c, uint8_t a
     if (y < INPUT_START || y > INPUT_END || col >= SCREEN_COLS) return;
 
     uint8_t local_y = y - INPUT_START;
+    uint8_t *vram_attr = attr_addr(y, col >> 1);
 
-    if (input_cache_char[local_y][col] == c && input_cache_attr[local_y][col >> 1] == attr) {
+    // VRAM can be modified by cursor/clear helpers without updating the cache.
+    if (input_cache_char[local_y][col] == c && *vram_attr == attr) {
+        input_cache_attr[local_y][col >> 1] = attr;
         return;
     }
 
@@ -64,7 +68,7 @@ static void put_char64_input_cached(uint8_t y, uint8_t col, uint8_t c, uint8_t a
 }
 
 
-static void input_add_char(uint8_t c)
+static void input_add_char(uint8_t c) __z88dk_fastcall
 {
     // 1. Actualizar estado del bloqueo (Toggle)
     check_caps_toggle();
@@ -116,15 +120,15 @@ static void input_add_char(uint8_t c)
             cursor_pos++;
             line_buffer[line_len] = 0;
 
-            uint16_t char_abs = (cursor_pos - 1) + 2;
-            uint8_t row = INPUT_START + (char_abs / SCREEN_COLS);
-            uint8_t col = char_abs % SCREEN_COLS;
+            uint16_t char_abs = (cursor_pos - 1) + input_prompt_len;
+            uint8_t row = INPUT_START + (char_abs >> 6);
+            uint8_t col = char_abs & 63;
 
             put_char64_input_cached(row, col, c, ATTR_INPUT);
 
-            uint16_t cur_abs = cursor_pos + 2;
-            uint8_t cur_row = INPUT_START + (cur_abs / SCREEN_COLS);
-            uint8_t cur_col = cur_abs % SCREEN_COLS;
+            uint16_t cur_abs = cursor_pos + input_prompt_len;
+            uint8_t cur_row = INPUT_START + (cur_abs >> 6);
+            uint8_t cur_col = cur_abs & 63;
 
             if (cur_row <= INPUT_END) {
                 put_char64_input_cached(cur_row, cur_col, ' ', ATTR_INPUT);
@@ -139,19 +143,12 @@ static void input_add_char(uint8_t c)
 // VIDEO MEMORY FUNCTIONS
 // ============================================================================
 
-// Pre-calculated screen base addresses for all 24 text lines (scanline 0)
-static const uint16_t screen_row_base[24] = {
-    // Top third (lines 0-7)
-    0x4000, 0x4020, 0x4040, 0x4060, 0x4080, 0x40A0, 0x40C0, 0x40E0,
-    // Middle third (lines 8-15)
-    0x4800, 0x4820, 0x4840, 0x4860, 0x4880, 0x48A0, 0x48C0, 0x48E0,
-    // Bottom third (lines 16-23)
-    0x5000, 0x5020, 0x5040, 0x5060, 0x5080, 0x50A0, 0x50C0, 0x50E0
-};
+// asm_row_base is in asm/bitstream_asm.asm (24 entries, same data)
+extern uint16_t asm_row_base[];
 
 static uint8_t* screen_line_addr(uint8_t y, uint8_t phys_x, uint8_t scanline)
 {
-    return (uint8_t*)(screen_row_base[y] + ((uint16_t)scanline << 8) + phys_x);
+    return (uint8_t*)(asm_row_base[y] + ((uint16_t)scanline << 8) + phys_x);
 }
 
 static uint8_t* attr_addr(uint8_t y, uint8_t phys_x)
@@ -168,7 +165,7 @@ static void draw_hline(uint8_t y, uint8_t x_start, uint8_t width, uint8_t scanli
     uint8_t *screen_ptr;
     uint8_t *attr_ptr;
 
-    screen_ptr = (uint8_t*)(screen_row_base[y] + ((uint16_t)scanline << 8) + x_start);
+    screen_ptr = (uint8_t*)(asm_row_base[y] + ((uint16_t)scanline << 8) + x_start);
     attr_ptr = (uint8_t*)(0x5800 + (uint16_t)y * 32 + x_start);
 
     for (x = 0; x < width; x++) {
@@ -180,6 +177,8 @@ static void draw_hline(uint8_t y, uint8_t x_start, uint8_t width, uint8_t scanli
 
 // print_str64_char and renderer globals are in asm/bitstream_asm.asm
 extern void print_str64_char(uint8_t ch) __z88dk_fastcall;
+extern void print_line64_fast(uint8_t y, const char *s, uint8_t attr);
+extern void draw_big_char(uint8_t ch) __z88dk_fastcall;
 extern uint8_t g_ps64_y;
 extern uint8_t g_ps64_col;
 extern uint8_t g_ps64_attr;
@@ -196,14 +195,21 @@ static void print_char64(uint8_t y, uint8_t col, uint8_t c, uint8_t attr) __z88d
 
 
 
+// Double-height string: renders each char across rows Y and Y+1
+// Caller must clear_line both rows with desired attr BEFORE calling.
+static void print_big_str(uint8_t y, uint8_t col, const char *s) __z88dk_callee
+{
+    g_ps64_y = y;
+    g_ps64_col = col;
+    while (*s && g_ps64_col < SCREEN_COLS) {
+        draw_big_char((uint8_t)*s++);
+        g_ps64_col++;
+    }
+}
+
 // clear_line, clear_zone are in asm/bitstream_asm.asm
 extern void clear_line(uint8_t y, uint8_t attr);
 extern void clear_zone(uint8_t start, uint8_t lines, uint8_t attr);
-
-static void print_str64(uint8_t y, uint8_t col, const char *s, uint8_t attr) __z88dk_callee
-{
-    while (*s && col < SCREEN_COLS) print_char64(y, col++, *s++, attr);
-}
 
 
 // scroll_main_zone is in asm/bitstream_asm.asm (includes DI/EI for artifact-free scroll)
@@ -216,51 +222,26 @@ extern void scroll_main_zone(void);
 #define ATTR_LBL (PAPER_WHITE | INK_BLUE)
 #define ATTR_VAL (PAPER_WHITE | INK_BLACK)
 
-static void print_padded(uint8_t y, uint8_t col, const char *s, uint8_t attr, uint8_t width) __z88dk_callee
-{
-    uint8_t count = 0;
-    while (*s && count < width) {
-        print_char64(y, col++, *s++, attr);
-        count++;
-    }
-    while (count < width) {
-        print_char64(y, col++, ' ', attr);
-        count++;
-    }
-}
-
-static void draw_indicator(uint8_t y, uint8_t phys_x, uint8_t attr)
-{
-    static const uint8_t gfx[] = {0x00, 0x3C, 0x7E, 0x7E, 0x7E, 0x7E, 0x3C, 0x00};
-    uint8_t i;
-
-    uint8_t *ptr = screen_line_addr(y, phys_x, 0);
-
-    for (i = 0; i < 8; i++) {
-        *ptr = gfx[i];
-        ptr += 256;
-    }
-    *attr_addr(y, phys_x) = attr;
-}
-
 // ============================================================================
 // DECIMAL FORMATTING HELPERS
 // ============================================================================
 
 static char* u32_to_dec(char *dst, uint32_t v) __z88dk_callee
 {
-    char tmp[10];
-    uint8_t n = 0;
-    if (v == 0) {
-        *dst++ = '0';
-        *dst = 0;
-        return dst;
+    // Repeated subtraction: avoids 32-bit divmod library (l_long_div_u)
+    static const uint32_t powers[] = {
+        1000000000UL, 100000000UL, 10000000UL, 1000000UL,
+        100000UL, 10000UL, 1000UL, 100UL, 10UL
+    };
+    uint8_t started = 0;
+    uint8_t i;
+    if (v == 0) { *dst++ = '0'; *dst = 0; return dst; }
+    for (i = 0; i < 9; i++) {
+        uint8_t d = 0;
+        while (v >= powers[i]) { v -= powers[i]; d++; }
+        if (d || started) { *dst++ = '0' + d; started = 1; }
     }
-    while (v > 0 && n < (uint8_t)sizeof(tmp)) {
-        tmp[n++] = (char)('0' + (v % 10));
-        v /= 10;
-    }
-    while (n) *dst++ = tmp[--n];
+    *dst++ = '0' + (uint8_t)v;
     *dst = 0;
     return dst;
 }
@@ -278,7 +259,6 @@ static void format_size(uint32_t bytes, char *buf)
         uint32_t whole = bytes >> 20;
         uint32_t rem = bytes & 0xFFFFF;
         uint8_t frac = (uint8_t)(((rem >> 17) * 10) >> 3);
-        if (frac > 9) frac = 9;
         p = u32_to_dec(p, whole);
         *p++ = '.';
         *p++ = (char)('0' + frac);
@@ -304,23 +284,26 @@ static void format_size(uint32_t bytes, char *buf)
 #define ATTR_DL_TEXT    (PAPER_WHITE | INK_BLACK)
 #define ATTR_DL_NAME    (PAPER_WHITE | INK_BLUE)
 #define ATTR_DL_BAR_ON  (PAPER_WHITE | INK_RED)
-#define ATTR_DL_BAR_OFF (PAPER_WHITE | INK_BLACK)
 
 static char progress_current_file[13] = "";
+static char progress_buf[65];
 
 static void draw_progress_bar(const char *filename, uint32_t received, uint32_t total)
 {
+    char line_buf[65];
     char size_buf[24];
     char total_buf[12];
-    uint8_t i;
     char name_short[13];
+    uint8_t i;
 
     #define BAR_WIDTH 16
-
     const char CHAR_BLOCK = '\x7F';
+
+    if (!filename || !filename[0]) return;
 
     status_bar_overwritten = 1;
 
+    // Truncate filename
     if (strlen(filename) > 12) {
         memcpy(name_short, filename, 12);
         name_short[12] = 0;
@@ -328,179 +311,207 @@ static void draw_progress_bar(const char *filename, uint32_t received, uint32_t 
         safe_copy(name_short, filename, sizeof(name_short));
     }
 
-    uint8_t force_redraw = 0;
+    // New file? Set attributes for both rows
     if (strcmp(progress_current_file, name_short) != 0) {
-        force_redraw = 1;
         safe_copy(progress_current_file, name_short, sizeof(progress_current_file));
         clear_line(STATUS_LINE, ATTR_DL_TEXT);
+        clear_line(STATUS_LINE + 1, ATTR_DL_TEXT);
+
+        // Attrs: Downloading(0-5) Name(6-11) Size(12-20) Bar(21-29) Spinner(30-31)
+        {
+            uint8_t *a20 = (uint8_t *)(0x5A80);
+            uint8_t *a21 = (uint8_t *)(0x5AA0);
+            for (i = 0; i < 6; i++)   { a20[i] = ATTR_DL_TEXT | BRIGHT; a21[i] = ATTR_DL_TEXT; }
+            for (i = 6; i < 12; i++)  { a20[i] = ATTR_DL_NAME | BRIGHT; a21[i] = ATTR_DL_NAME; }
+            for (i = 12; i < 22; i++) { a20[i] = ATTR_DL_TEXT | BRIGHT; a21[i] = ATTR_DL_TEXT; }
+            for (i = 22; i < 30; i++) { a20[i] = ATTR_DL_BAR_ON | BRIGHT; a21[i] = ATTR_DL_BAR_ON; }
+            for (i = 30; i < 32; i++) { a20[i] = ATTR_DL_TEXT | BRIGHT; a21[i] = ATTR_DL_TEXT; }
+        }
+
+        // Draw all 64 chars first time
+        memset(progress_buf, 0, 65);
     }
 
+    // Build size string
     format_size(received, size_buf);
-    strcat(size_buf, "/");
-    format_size(total, total_buf);
-    strcat(size_buf, total_buf);
-
-    uint8_t col = 0;
-
-    print_str64(STATUS_LINE, col, "Downloading:", ATTR_DL_TEXT);
-    col += 12;
-
-    if (force_redraw) {
-        print_padded(STATUS_LINE, col, name_short, ATTR_DL_NAME, 12);
+    {
+        char *size_end = size_buf + strlen(size_buf);
+        *size_end++ = '/';
+        format_size(total, total_buf);
+        safe_copy(size_end, total_buf, (uint8_t)(sizeof(size_buf) - (size_end - size_buf)));
     }
-    col += 12;
 
-    print_char64(STATUS_LINE, col++, ' ', ATTR_DL_TEXT);
-    print_char64(STATUS_LINE, col++, ' ', ATTR_DL_TEXT);
-
-    print_padded(STATUS_LINE, col, size_buf, ATTR_DL_TEXT, 15);
-    col += 15;
-
-    print_char64(STATUS_LINE, col++, ' ', ATTR_DL_TEXT);
-    print_char64(STATUS_LINE, col++, ' ', ATTR_DL_TEXT);
-
-    print_char64(STATUS_LINE, col++, '[', ATTR_DL_TEXT);
-
+    // Calculate bar fill
     uint8_t extra_blocks = 0;
     if (total > 0) {
-        extra_blocks = (uint8_t)((received * BAR_WIDTH) / total);
+        uint16_t r16 = (uint16_t)(received >> 8);
+        uint16_t t16 = (uint16_t)(total >> 8);
+        extra_blocks = (t16 > 0) ? (uint8_t)((r16 * BAR_WIDTH) / t16) : 0;
         if (extra_blocks > BAR_WIDTH) extra_blocks = BAR_WIDTH;
     }
+    uint8_t visual_fill = (received > 0) ? 1 + extra_blocks : 0;
 
-    uint8_t visual_fill = 0;
-    if (received > 0) {
-        visual_fill = 1 + extra_blocks;
-    }
+    // Build full 64-char line in buffer
+    // Layout: "Downloading:" (0-11) filename (12-23) "  " (24-25) size (26-40) "  [" (41-43) bar (44-59) "]  " (60-62) spin (63)
+    memset(line_buf, ' ', 64);
+    line_buf[64] = 0;
 
-    for (i = 0; i < BAR_WIDTH; i++) {
-        char c;
-        if (i < visual_fill) {
-            c = CHAR_BLOCK;
-        } else {
-            c = ' ';
+    memcpy(line_buf, "Downloading:", 12);
+    memcpy(line_buf + 12, name_short, strlen(name_short));
+    memcpy(line_buf + 26, size_buf, strlen(size_buf));
+    line_buf[43] = '[';
+    for (i = 0; i < BAR_WIDTH; i++)
+        line_buf[44 + i] = (i < visual_fill) ? CHAR_BLOCK : ' ';
+    line_buf[60] = ']';
+
+    spinner_idx = (spinner_idx + 1) & 3;
+    line_buf[63] = spinner_chars[spinner_idx];
+
+    // Partial update: only draw changed chars with draw_big_char
+    g_ps64_y = STATUS_LINE;
+    for (i = 0; i < 64; i++) {
+        if (line_buf[i] != progress_buf[i]) {
+            g_ps64_col = i;
+            draw_big_char((uint8_t)line_buf[i]);
         }
-        print_char64(STATUS_LINE, col++, c, ATTR_DL_BAR_ON);
     }
-
-    print_char64(STATUS_LINE, col++, ']', ATTR_DL_TEXT);
-    print_char64(STATUS_LINE, col++, ' ', ATTR_DL_TEXT);
-    print_char64(STATUS_LINE, col++, ' ', PAPER_WHITE | INK_BLUE);
-
-    spinner_idx = (spinner_idx + 1) % 4;
-    print_char64(STATUS_LINE, 63, spinner_chars[spinner_idx], PAPER_WHITE | INK_BLUE);
-}
-
-// Imprime una ruta ajustada al ancho de pantalla (Truncamiento por la izquierda)
-static void print_smart_path(const char *prefix, const char *path)
-{
-    char buf[SCREEN_COLS + 1];
-    uint8_t prefix_len = strlen(prefix);
-    uint8_t path_len = strlen(path);
-    uint8_t avail = SCREEN_COLS - prefix_len;
-
-    char *p = buf;
-    p = str_append(p, prefix);
-
-    if (path_len > avail) {
-        p = char_append(p, '~');
-        p = str_append(p, path + path_len - (avail - 1));
-    } else {
-        p = str_append(p, path);
-    }
-
-    uint8_t old_attr = current_attr;
-    current_attr = ATTR_RESPONSE;
-    main_print(buf);
-    current_attr = old_attr;
+    memcpy(progress_buf, line_buf, 65);
 }
 
 // ============================================================================
 // STATUS BAR (OPTIMIZADA - ACTUALIZACIÓN PARCIAL)
 // ============================================================================
 
-static char last_host[32] = "";
-static char last_user[20] = "";
-static char last_path[PATH_SIZE] = "";
+static char last_status_buf[65];
 static uint8_t last_conn_state = 255;
 static uint8_t force_status_redraw = 1;
 
+// Soft invalidate: only text changed, attrs still correct. Partial update.
 static void invalidate_status_bar(void) {
+    memset(last_status_buf, 0xFF, 64);
+    last_conn_state = 255;
+}
+
+// Hard invalidate: attrs corrupted (e.g. after progress bar). Full clear+redraw.
+static void invalidate_status_bar_full(void) {
     force_status_redraw = 1;
     last_conn_state = 255;
-    last_host[0] = 0;
-    last_user[0] = 0;
-    last_path[0] = 0;
+}
+
+// Double-height indicator: spans rows Y and Y+1 at physical column phys_x
+static void draw_indicator_big(uint8_t y, uint8_t phys_x, uint8_t attr)
+{
+    // Original pattern doubled: top 4 lines → row Y, bottom 4 → row Y+1
+    static const uint8_t top[] = {0x00, 0x00, 0x3C, 0x3C, 0x7E, 0x7E, 0x7E, 0x7E};
+    static const uint8_t bot[] = {0x7E, 0x7E, 0x7E, 0x7E, 0x3C, 0x3C, 0x00, 0x00};
+    uint8_t i;
+    uint8_t *ptr;
+
+    ptr = screen_line_addr(y, phys_x, 0);
+    for (i = 0; i < 8; i++) { *ptr = top[i]; ptr += 256; }
+    *attr_addr(y, phys_x) = attr | BRIGHT;
+
+    ptr = screen_line_addr(y + 1, phys_x, 0);
+    for (i = 0; i < 8; i++) { *ptr = bot[i]; ptr += 256; }
+    *attr_addr(y + 1, phys_x) = attr;
 }
 
 static void draw_status_bar_real(void)
 {
     uint8_t ind_attr;
-    char buf_short[40];
+    char line_buf[65];
+    uint8_t i;
 
-    const uint8_t W_HOST = 15;
-    const uint8_t W_USER = 13;
-    const uint8_t W_PATH = 19;
+    // Layout (64 cols) — values start at EVEN columns for clean attr boundaries:
+    //  0-3:"FTP:" 4-19:host  20-25:"USER: " 26-37:user  38-43:" PWD: " 44-61:path  62-63:ind
+    //  Phys cells: 0-1=LBL 2-9=VAL 10-12=LBL 13-18=VAL 19-21=LBL 22-30=VAL 31=ind
+    const uint8_t P_HOST = 4;   const uint8_t W_HOST = 16;
+    const uint8_t P_USER = 26;  const uint8_t W_USER = 12;
+    const uint8_t P_PATH = 44;  const uint8_t W_PATH = 18;
 
-    const uint8_t P_HOST = 4;
-    const uint8_t P_USER = 25;
-    const uint8_t P_PATH = 43;
+    // Build full 64-char status line in buffer
+    memset(line_buf, ' ', 64);
+    line_buf[64] = 0;
 
-    if (force_status_redraw) {
-        clear_line(STATUS_LINE, ATTR_STATUS);
-        print_str64(STATUS_LINE, 0,  "FTP:",  ATTR_LBL);
-        print_str64(STATUS_LINE, 20, "USER:", ATTR_LBL);
-        print_str64(STATUS_LINE, 39, "PWD:",  ATTR_LBL);
-        force_status_redraw = 0;
-        last_host[0] = 0; last_user[0] = 0; last_path[0] = 0; last_conn_state = 255;
-    }
+    memcpy(line_buf + 0,  "FTP:", 4);
+    memcpy(line_buf + 20, "USER:", 5);
+    memcpy(line_buf + 39, "PWD:", 4);
 
     // HOST
-    if (strcmp(ftp_host, last_host) != 0) {
-        if (strlen(ftp_host) > W_HOST) {
-            memcpy(buf_short, ftp_host, W_HOST - 1);
-            buf_short[W_HOST - 1] = '~';
-            buf_short[W_HOST] = 0;
-        } else {
-            safe_copy(buf_short, ftp_host, sizeof(buf_short));
-        }
-        print_padded(STATUS_LINE, P_HOST, buf_short, ATTR_VAL, W_HOST);
-        safe_copy(last_host, ftp_host, sizeof(last_host));
+    {
+        uint8_t len = strlen(ftp_host);
+        if (len > W_HOST) { memcpy(line_buf + P_HOST, ftp_host, W_HOST - 1); line_buf[P_HOST + W_HOST - 1] = '~'; }
+        else { memcpy(line_buf + P_HOST, ftp_host, len); }
     }
 
     // USER
-    if (strcmp(ftp_user, last_user) != 0) {
-        if (strlen(ftp_user) > W_USER) {
-            memcpy(buf_short, ftp_user, W_USER - 1);
-            buf_short[W_USER - 1] = '~';
-            buf_short[W_USER] = 0;
-        } else {
-            safe_copy(buf_short, ftp_user, sizeof(buf_short));
-        }
-        print_padded(STATUS_LINE, P_USER, buf_short, ATTR_VAL, W_USER);
-        safe_copy(last_user, ftp_user, sizeof(last_user));
+    {
+        uint8_t len = strlen(ftp_user);
+        if (len > W_USER) { memcpy(line_buf + P_USER, ftp_user, W_USER - 1); line_buf[P_USER + W_USER - 1] = '~'; }
+        else { memcpy(line_buf + P_USER, ftp_user, len); }
     }
 
-    // PATH (PWD)
-    if (strcmp(ftp_path, last_path) != 0) {
+    // PATH
+    {
         uint8_t len = strlen(ftp_path);
-        if (len > W_PATH) {
-            buf_short[0] = '~';
-            strncpy(buf_short + 1, ftp_path + len - (W_PATH - 1), W_PATH - 1);
-            buf_short[W_PATH] = '\0';
-        } else {
-            safe_copy(buf_short, ftp_path, sizeof(buf_short));
-        }
-        print_padded(STATUS_LINE, P_PATH, buf_short, ATTR_VAL, W_PATH);
-        safe_copy(last_path, ftp_path, sizeof(last_path));
+        if (len > W_PATH) { line_buf[P_PATH] = '~'; memcpy(line_buf + P_PATH + 1, ftp_path + len - (W_PATH - 1), W_PATH - 1); }
+        else { memcpy(line_buf + P_PATH, ftp_path, len); }
     }
 
-    // INDICADOR
+    if (force_status_redraw) {
+        // Init only: clear rows, set attributes once
+        clear_line(STATUS_LINE, ATTR_STATUS);
+        clear_line(STATUS_LINE + 1, ATTR_STATUS);
+
+        {
+            uint8_t *a20 = (uint8_t *)(0x5A80);
+            uint8_t *a21 = (uint8_t *)(0x5AA0);
+            for (i = 0; i < 2; i++)   { a20[i] = ATTR_LBL | BRIGHT; a21[i] = ATTR_LBL; }
+            for (i = 2; i < 10; i++)  { a20[i] = ATTR_VAL | BRIGHT; a21[i] = ATTR_VAL; }
+            for (i = 10; i < 13; i++) { a20[i] = ATTR_LBL | BRIGHT; a21[i] = ATTR_LBL; }
+            for (i = 13; i < 19; i++) { a20[i] = ATTR_VAL | BRIGHT; a21[i] = ATTR_VAL; }
+            for (i = 19; i < 22; i++) { a20[i] = ATTR_LBL | BRIGHT; a21[i] = ATTR_LBL; }
+            for (i = 22; i < 31; i++) { a20[i] = ATTR_VAL | BRIGHT; a21[i] = ATTR_VAL; }
+        }
+
+        // Draw all 64 chars
+        print_big_str(STATUS_LINE, 0, line_buf);
+        memcpy(last_status_buf, line_buf, 65);
+        force_status_redraw = 0;
+
+        // Indicator
+        if (connection_state == STATE_DISCONNECTED) ind_attr = STATUS_RED;
+        else if (connection_state == STATE_LOGGED_IN) ind_attr = STATUS_GREEN;
+        else ind_attr = STATUS_YELLOW;
+        draw_indicator_big(STATUS_LINE, 31, ind_attr);
+        last_conn_state = connection_state;
+        return;
+    }
+
+    // Partial update: only draw changed characters (zero flicker)
+    {
+        uint8_t any = 0;
+        for (i = 0; i < 62; i++) {
+            if (line_buf[i] != last_status_buf[i]) { any = 1; break; }
+        }
+        if (!any && connection_state == last_conn_state) return;
+    }
+
+    g_ps64_y = STATUS_LINE;
+    for (i = 0; i < 62; i++) {
+        if (line_buf[i] != last_status_buf[i]) {
+            g_ps64_col = i;
+            draw_big_char((uint8_t)line_buf[i]);
+        }
+    }
+    memcpy(last_status_buf, line_buf, 65);
+
+    // Indicator
     if (connection_state != last_conn_state) {
         if (connection_state == STATE_DISCONNECTED) ind_attr = STATUS_RED;
         else if (connection_state == STATE_LOGGED_IN) ind_attr = STATUS_GREEN;
         else ind_attr = STATUS_YELLOW;
-
-        draw_indicator(STATUS_LINE, 31, ind_attr);
+        draw_indicator_big(STATUS_LINE, 31, ind_attr);
         last_conn_state = connection_state;
     }
 }
@@ -513,14 +524,18 @@ static void draw_status_bar_real(void)
 extern void main_newline(void);
 extern void main_putc(uint8_t c) __z88dk_fastcall;
 extern void main_puts(const char *s) __z88dk_fastcall;
+extern void main_puts2(const char *a, const char *b);
+extern void utf8_to_ascii(char *s) __z88dk_fastcall;
 
-static void main_print(const char *s)
+// ASM fast-path: uses print_line64_fast when text fits on one line
+extern void main_print_asm(const char *s) __z88dk_fastcall;
+
+static void main_print(const char *s) __z88dk_fastcall
 {
-    main_puts(s);
-    main_newline();
+    main_print_asm(s);
 }
 
-static void fail(const char *msg)
+static void fail(const char *msg) __z88dk_fastcall
 {
     current_attr = ATTR_ERROR;
     main_print(msg);
@@ -531,23 +546,43 @@ static void input_clear(void);
 static void input_backspace(void);
 static void input_left(void);
 static void input_right(void);
-static void input_add_char(uint8_t c);
+static void input_add_char(uint8_t c) __z88dk_fastcall;
 static uint8_t read_key(void);
 
 // Prompt: shows prompt text in main zone, uses normal "> " input zone for typing.
 // masked: if 1, shows '*' (UP toggles visibility).
-// Returns length of input. EDIT cancels (returns 0 with buf[0]=0).
+// Returns length of input. BREAK cancels (returns 0xFF with buf[0]=0).
 static uint8_t prompt_input_zone(const char *prompt, char *buf, uint8_t max_len, uint8_t masked)
 {
     uint8_t hide = masked;
     uint8_t c;
+    uint8_t plen;
 
-    // Show prompt in main zone
-    current_attr = ATTR_LOCAL;
-    main_puts(prompt);
+    // Calculate prompt length (cap at 30 to leave room for input)
+    plen = strlen(prompt);
+    if (plen > 30) plen = 30;
+    input_prompt_len = plen;
 
-    // Clear input zone and set up fresh "> " prompt
-    input_clear();
+    // Clear input zone
+    line_len = 0;
+    line_buffer[0] = 0;
+    cursor_pos = 0;
+    hist_pos = -1;
+    input_cache_invalidate();
+    clear_zone(INPUT_START, INPUT_LINES, ATTR_INPUT_BG);
+
+    // Write prompt IN the input zone with distinct color (blue on green)
+    {
+        uint8_t i;
+        for (i = 0; i < plen; i++) {
+            put_char64_input_cached(INPUT_START + (i >> 6), i & 63,
+                                    prompt[i], ATTR_INPUT);
+        }
+    }
+
+    // Position cursor after prompt
+    put_char64_input_cached(INPUT_START + (plen >> 6), plen & 63, ' ', ATTR_INPUT);
+    draw_cursor_underline(INPUT_START + (plen >> 6), plen & 63);
 
     // Wait for any held key to release (debounce between consecutive prompts)
     { uint8_t w; for (w = 0; w < 10; w++) { HALT(); uart_drain_to_buffer(); } }
@@ -557,10 +592,10 @@ static uint8_t prompt_input_zone(const char *prompt, char *buf, uint8_t max_len,
         HALT();
         uart_drain_to_buffer();
 
-        if (key_edit_down()) {
+        if (key_break_down()) {
             buf[0] = 0;
             input_clear();
-            return 0;
+            return 0xFF;
         }
 
         c = read_key();
@@ -581,9 +616,9 @@ static uint8_t prompt_input_zone(const char *prompt, char *buf, uint8_t max_len,
             uint8_t i;
             hide = !hide;
             for (i = 0; i < line_len; i++) {
-                uint16_t abs = i + 2;
-                uint8_t row = INPUT_START + (abs / SCREEN_COLS);
-                uint8_t col = abs % SCREEN_COLS;
+                uint16_t abs = i + input_prompt_len;
+                uint8_t row = INPUT_START + (abs >> 6);
+                uint8_t col = abs & 63;
                 if (row > INPUT_END) break;
                 put_char64_input_cached(row, col, hide ? '*' : line_buffer[i], ATTR_INPUT);
             }
@@ -594,16 +629,16 @@ static uint8_t prompt_input_zone(const char *prompt, char *buf, uint8_t max_len,
         else if (c == KEY_RIGHT) { input_right(); }
         else if (c == KEY_BACKSPACE) { input_backspace(); }
         else if (c >= 32 && c <= 126) {
-            input_add_char(c);
+            if (line_len < max_len) input_add_char(c);
         }
 
         // If masked, overwrite visible chars with '*'
         if (masked && hide) {
             uint8_t i;
             for (i = 0; i < line_len; i++) {
-                uint16_t abs = i + 2;
-                uint8_t row = INPUT_START + (abs / SCREEN_COLS);
-                uint8_t col = abs % SCREEN_COLS;
+                uint16_t abs = i + input_prompt_len;
+                uint8_t row = INPUT_START + (abs >> 6);
+                uint8_t col = abs & 63;
                 if (row > INPUT_END) break;
                 put_char64_input_cached(row, col, '*', ATTR_INPUT);
             }
@@ -658,26 +693,26 @@ static void draw_cursor_underline(uint8_t y, uint8_t col)
     input_cache_invalidate_cell(y, col);
 }
 
-static void redraw_input_from(uint8_t start_pos)
+static void redraw_input_from(uint8_t start_pos) __z88dk_fastcall
 {
     uint8_t row, col, i;
     uint16_t abs_pos;
 
-    if (start_pos == 0) {
+    if (start_pos == 0 && input_prompt_len == 2) {
         put_char64_input_cached(INPUT_START, 0, '>', ATTR_PROMPT);
     }
 
     for (i = start_pos; i < line_len; i++) {
-        abs_pos = i + 2;
-        row = INPUT_START + (abs_pos / SCREEN_COLS);
-        col = abs_pos % SCREEN_COLS;
+        abs_pos = i + input_prompt_len;
+        row = INPUT_START + (abs_pos >> 6);
+        col = abs_pos & 63;
         if (row > INPUT_END) break;
         put_char64_input_cached(row, col, line_buffer[i], ATTR_INPUT);
     }
 
-    uint16_t cur_abs = cursor_pos + 2;
-    uint8_t cur_row = INPUT_START + (cur_abs / SCREEN_COLS);
-    uint8_t cur_col = cur_abs % SCREEN_COLS;
+    uint16_t cur_abs = cursor_pos + input_prompt_len;
+    uint8_t cur_row = INPUT_START + (cur_abs >> 6);
+    uint8_t cur_col = cur_abs & 63;
 
     if (cur_row <= INPUT_END) {
         char c_under = (cursor_pos < line_len) ? line_buffer[cursor_pos] : ' ';
@@ -685,9 +720,9 @@ static void redraw_input_from(uint8_t start_pos)
         draw_cursor_underline(cur_row, cur_col);
     }
 
-    uint16_t end_abs = line_len + 2;
-    row = INPUT_START + (end_abs / SCREEN_COLS);
-    col = end_abs % SCREEN_COLS;
+    uint16_t end_abs = line_len + input_prompt_len;
+    row = INPUT_START + (end_abs >> 6);
+    col = end_abs & 63;
 
     uint8_t clear_count = 0;
     while (row <= INPUT_END && clear_count < 8) {
@@ -709,20 +744,21 @@ static void input_clear(void)
     line_buffer[0] = 0;
     cursor_pos = 0;
     hist_pos = -1;
+    input_prompt_len = 2;   // restore default "> " prompt
 
     input_cache_invalidate();
     clear_zone(INPUT_START, INPUT_LINES, ATTR_INPUT_BG);
 
     put_char64_input_cached(INPUT_START, 0, '>', ATTR_PROMPT);
-    put_char64_input_cached(INPUT_START, 2, ' ', ATTR_INPUT);
-    draw_cursor_underline(INPUT_START, 2);
+    put_char64_input_cached(INPUT_START, input_prompt_len, ' ', ATTR_INPUT);
+    draw_cursor_underline(INPUT_START, input_prompt_len);
 }
 
 static void refresh_cursor_char(uint8_t idx, uint8_t show_cursor)
 {
-    uint16_t abs_pos = idx + 2;
-    uint8_t row = INPUT_START + (abs_pos / SCREEN_COLS);
-    uint8_t col = abs_pos % SCREEN_COLS;
+    uint16_t abs_pos = idx + input_prompt_len;
+    uint8_t row = INPUT_START + (abs_pos >> 6);
+    uint8_t col = abs_pos & 63;
 
     if (row > INPUT_END) return;
 
@@ -748,9 +784,9 @@ static void input_backspace(void)
         line_buffer[line_len] = 0;
 
         if (was_at_end) {
-            uint16_t old_pos = cursor_pos + 1 + 2;
-            uint8_t old_row = INPUT_START + (old_pos / SCREEN_COLS);
-            uint8_t old_col = old_pos % SCREEN_COLS;
+            uint16_t old_pos = cursor_pos + 1 + input_prompt_len;
+            uint8_t old_row = INPUT_START + (old_pos >> 6);
+            uint8_t old_col = old_pos & 63;
             if (old_row <= INPUT_END) {
                 put_char64_input_cached(old_row, old_col, ' ', ATTR_INPUT_BG);
             }
@@ -779,16 +815,16 @@ static void input_right(void)
     }
 }
 
-static void set_input_busy(uint8_t is_busy)
+static void set_input_busy(uint8_t is_busy) __z88dk_fastcall
 {
     uint16_t cur_abs;
     uint8_t row, col;
     char c_under;
 
     if (is_busy) {
-        cur_abs = cursor_pos + 2;
-        row = INPUT_START + (cur_abs / SCREEN_COLS);
-        col = cur_abs % SCREEN_COLS;
+        cur_abs = cursor_pos + input_prompt_len;
+        row = INPUT_START + (cur_abs >> 6);
+        col = cur_abs & 63;
 
         if (row <= INPUT_END) {
             c_under = (cursor_pos < line_len) ? line_buffer[cursor_pos] : ' ';
@@ -803,9 +839,9 @@ static void set_input_busy(uint8_t is_busy)
 // KEYBOARD HANDLING (OPTIMIZED)
 // ============================================================================
 
-static uint8_t last_k = 0;
-static uint16_t repeat_timer = 0;
-static uint8_t debounce_zero = 0;
+static uint8_t last_k;
+static uint16_t repeat_timer;
+static uint8_t debounce_zero;
 
 static uint8_t read_key(void)
 {

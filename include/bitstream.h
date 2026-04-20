@@ -11,7 +11,7 @@
 #include <input.h>
 
 // --- VERSION ---
-#define APP_VERSION      "1.2.0"
+#define APP_VERSION      "1.3.0"
 
 #ifdef DIVMMC_UART
 #define UART_INTERFACE   "divMMC"
@@ -25,7 +25,7 @@
 #define PATH_SIZE        48
 
 // --- COLORES / ATRIBUTOS ---
-#define ATTR_BANNER     (PAPER_BLUE | INK_WHITE | BRIGHT)
+#define ATTR_BANNER     (PAPER_BLACK | INK_WHITE | BRIGHT)
 #define ATTR_STATUS     (PAPER_WHITE | INK_BLUE)
 #define ATTR_MAIN_BG    (PAPER_BLACK | INK_WHITE)
 #define ATTR_LOCAL      (PAPER_BLACK | INK_GREEN | BRIGHT)
@@ -44,14 +44,15 @@
 #define SCREEN_COLS     64
 #define SCREEN_PHYS     32
 #define BANNER_START    0
-#define MAIN_START      2
-#define MAIN_LINES      18
+#define BANNER_LINES    2
+#define MAIN_START      3
+#define MAIN_LINES      16
 #define MAIN_END        (MAIN_START + MAIN_LINES - 1)
-#define STATUS_LINE     21
+#define STATUS_LINE     20
 #define INPUT_START     22
 #define INPUT_LINES     2
 #define INPUT_END       23
-#define LINES_PER_PAGE  17
+#define LINES_PER_PAGE  15
 
 // --- FTP STATE ---
 #define STATE_DISCONNECTED  0
@@ -78,8 +79,6 @@
 #define FRAMES_10S      (10 * FRAMES_1S)
 #define FRAMES_LIST_PAUSE_RISKY      (90 * FRAMES_1S)
 #define FRAMES_NOOP_QUICK_TIMEOUT    (1 * FRAMES_1S)
-#define TIMEOUT_BUSY    800000UL
-#define SILENCE_BUSY    200000UL
 
 // --- HALT MACRO ---
 #define HALT() do { __asm__("ei"); __asm__("halt"); } while(0)
@@ -109,4 +108,5 @@ extern void     ay_uart_send_block(void *buf, uint16_t len) __z88dk_callee;
 extern uint8_t  ay_uart_read(void);
 extern uint8_t  ay_uart_ready(void);
 extern uint8_t  ay_uart_ready_fast(void);
+
 

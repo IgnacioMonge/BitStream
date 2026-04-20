@@ -64,9 +64,7 @@ static void cmd_status(void)
     main_print("--- SYSTEM STATUS ---");
 
     if (connection_state >= STATE_FTP_CONNECTED) {
-        uint8_t saved_debug_enabled = debug_enabled;
-        uint8_t saved_drain_limit   = uart_drain_limit;
-        debug_enabled = 0;
+        uint8_t saved_drain_limit = uart_drain_limit;
         drain_mode_fast();
 
         main_puts("Verifying connection... ");
@@ -82,7 +80,7 @@ static void cmd_status(void)
             while (frames < 150) {
                 HALT();
 
-                if (key_edit_down()) {
+                if (key_break_down()) {
                     cancelled = 1;
                     break;
                 }
@@ -123,14 +121,13 @@ static void cmd_status(void)
         }
         current_attr = ATTR_RESPONSE;
 
-        debug_enabled = saved_debug_enabled;
         uart_drain_limit = saved_drain_limit;
     }
 
     main_puts("State: ");
     if (connection_state == STATE_DISCONNECTED) main_print(S_DISCONN);
-    else if (connection_state == STATE_WIFI_OK) main_print("WiFi OK (No FTP)");
-    else if (connection_state == STATE_FTP_CONNECTED) main_print("FTP Connected (No Login)");
+    else if (connection_state == STATE_WIFI_OK) main_print("WiFi OK");
+    else if (connection_state == STATE_FTP_CONNECTED) main_print("FTP Connected");
     else if (connection_state == STATE_LOGGED_IN) main_print("Logged In");
     else {
         fail("Unknown");
@@ -201,10 +198,10 @@ static void cmd_help_special(void)
     main_print("  !INIT - Reset ESP");
     main_print("  !ABOUT - Version");
     current_attr = ATTR_RESPONSE;
-    main_print("TIP: EDIT cancels operations");
+    main_print("TIP: BREAK cancels operations");
 }
 
-static uint32_t parse_size_arg(const char *s)
+static uint32_t parse_size_arg(const char *s) __z88dk_fastcall
 {
     uint32_t val = 0;
     if (*s == '>') s++;
@@ -214,8 +211,8 @@ static uint32_t parse_size_arg(const char *s)
         s++;
     }
 
-    if (*s == 'k' || *s == 'K') val *= 1024UL;
-    else if (*s == 'm' || *s == 'M') val *= 1048576UL;
+    if (*s == 'k' || *s == 'K') val <<= 10;
+    else if (*s == 'm' || *s == 'M') val <<= 20;
 
     return val;
 }
@@ -243,30 +240,9 @@ static uint32_t parse_size_arg(const char *s)
 #define H_AB CMD_HASH('A','B')
 #define H_CL CMD_HASH('C','L')
 #define H_IN CMD_HASH('I','N')
-#define H_BH CMD_HASH('H','E')
+#define H_BANG_HE CMD_HASH('H','E')
 
-static uint8_t is_restricted_cmd(const char *cmd)
-{
-    uint16_t h;
-
-    if (cmd[0] == '!') {
-        h = CMD_HASH(cmd[1], cmd[2]);
-        return (h == H_SE) ? 1 : 0;
-    }
-
-    h = CMD_HASH(cmd[0], cmd[1]);
-    switch (h) {
-        case H_LS:
-        case H_PW:
-        case H_CD:
-        case H_GE:
-            return 1;
-        default:
-            return 0;
-    }
-}
-
-static void parse_command(char *line)
+static void parse_command(char *line) __z88dk_fastcall
 {
     static char cmd[16];
     static char arg1[48];
@@ -286,21 +262,10 @@ static void parse_command(char *line)
 
     str_to_upper(cmd);
 
-    if (is_restricted_cmd(cmd)) {
-        if (!ensure_logged_in()) return;
-    }
-
-    h = CMD_HASH(cmd[0], cmd[1]);
-    if (h == H_US) {
-        if (connection_state < STATE_FTP_CONNECTED) {
-            fail(S_NO_CONN);
-            return;
-        }
-    }
-
     // --- BANG COMMANDS (!) ---
     if (cmd[0] == '!') {
         h = CMD_HASH(cmd[1], cmd[2]);
+        if (h == H_SE && !ensure_logged_in()) return;
 
         switch (h) {
             case H_CO:  // !CONNECT
@@ -361,7 +326,7 @@ static void parse_command(char *line)
                 full_initialization_sequence();
                 return;
 
-            case H_BH:  // !HELP
+            case H_BANG_HE:  // !HELP
                 cmd_help_special();
                 return;
         }
@@ -371,6 +336,12 @@ static void parse_command(char *line)
 
     // --- STANDARD COMMANDS ---
     h = CMD_HASH(cmd[0], cmd[1]);
+    if (h == H_CD || h == H_PW || h == H_LS || h == H_GE) {
+        if (!ensure_logged_in()) return;
+    } else if (h == H_US && connection_state < STATE_FTP_CONNECTED) {
+        fail(S_NO_CONN);
+        return;
+    }
 
     switch (h) {
         case H_OP:  // OPEN
@@ -409,21 +380,15 @@ static void parse_command(char *line)
             break;
 
         case H_GE:  // GET
-            {
-                char *args_ptr = line;
-                while (*args_ptr && *args_ptr != ' ') args_ptr++;
-                args_ptr = skip_ws(args_ptr);
-
-                if (*args_ptr) {
-                    cmd_get(args_ptr);
-                } else {
-                    fail("Usage: GET file1 [file2 ...]");
-                }
+            if (arg1[0]) {
+                cmd_get(arg1);
+            } else {
+                fail("Usage: GET filename");
             }
             break;
 
         case H_QU:  // QUIT
-            if (cmd[2] == 'I' && cmd[3] == 'T') cmd_quit();
+            if (strlen(cmd) >= 4 && cmd[2] == 'I' && cmd[3] == 'T') cmd_quit();
             else fail(S_UNKNOWN_CMD);
             break;
 
