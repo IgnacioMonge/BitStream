@@ -1,5 +1,5 @@
 // ============================================================================
-// bitstream.h - Master header for BitStream FTP Client
+// bitstream.h - Master header for BitStreamZX FTP Client
 // ============================================================================
 #pragma once
 
@@ -11,6 +11,8 @@
 #include <input.h>
 
 // --- VERSION ---
+#define APP_NAME         "BitStreamZX"
+#define APP_NAME_UPPER   "BitStreamZX"
 #define APP_VERSION      "1.3.0"
 
 #ifdef DIVMMC_UART
@@ -108,5 +110,3 @@ extern void     ay_uart_send_block(void *buf, uint16_t len) __z88dk_callee;
 extern uint8_t  ay_uart_read(void);
 extern uint8_t  ay_uart_ready(void);
 extern uint8_t  ay_uart_ready_fast(void);
-
-

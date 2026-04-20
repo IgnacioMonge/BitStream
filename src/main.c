@@ -15,7 +15,7 @@ static void draw_banner(void)
     clear_line(1, ATTR_BANNER & 0xBF);
 
     // Double-height banner text across rows 0-1
-    print_big_str(0, 0, "BITSTREAM " APP_VERSION " - FTP Client / " UART_INTERFACE);
+    print_big_str(0, 0, APP_NAME_UPPER " " APP_VERSION " - FTP Client / " UART_INTERFACE);
 
     // Dithered badge: 5 cells (cols 27-31), SpectalkZX default theme values
     // Row 0: bridge(blk/blk), blk/red, red/yel, yel/grn, grn/blu
@@ -115,7 +115,7 @@ static void print_intro_banner(void)
 {
     current_attr = PAPER_BLACK | INK_WHITE | BRIGHT;
 
-    main_print("BitStream " APP_VERSION " - FTP Client / " UART_INTERFACE);
+    main_print(APP_NAME " " APP_VERSION " - FTP Client / " UART_INTERFACE);
     main_print("(C) 2026 M. Ignacio Monge Garcia");
 }
 

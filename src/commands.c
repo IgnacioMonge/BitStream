@@ -46,7 +46,7 @@ static void cmd_cls(void)
 static void cmd_about(void)
 {
     current_attr = ATTR_RESPONSE;
-    main_print("BitStream " APP_VERSION " - FTP Client / " UART_INTERFACE);
+    main_print(APP_NAME " " APP_VERSION " - FTP Client / " UART_INTERFACE);
     print_char_line(22, '-');
     current_attr = ATTR_LOCAL;
     main_print("(C) 2026 M. Ignacio Monge Garcia");
@@ -248,13 +248,16 @@ static void parse_command(char *line) __z88dk_fastcall
     static char arg1[48];
     static char arg2[32];
     static char arg3[32];
+    char *get_args;
     uint16_t h;
 
     cmd[0] = 0; arg1[0] = 0; arg2[0] = 0; arg3[0] = 0;
+    get_args = NULL;
 
     {
         char *p = line;
         p = read_token(p, cmd, sizeof(cmd));
+        get_args = skip_ws(p);
         p = read_token(p, arg1, sizeof(arg1));
         p = read_token(p, arg2, sizeof(arg2));
         p = read_token(p, arg3, sizeof(arg3));
@@ -380,10 +383,10 @@ static void parse_command(char *line) __z88dk_fastcall
             break;
 
         case H_GE:  // GET
-            if (arg1[0]) {
-                cmd_get(arg1);
+            if (get_args && get_args[0]) {
+                cmd_get(get_args);
             } else {
-                fail("Usage: GET filename");
+                fail("Usage: GET file1 [file2 ...]");
             }
             break;
 
