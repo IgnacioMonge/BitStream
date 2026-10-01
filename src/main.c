@@ -128,6 +128,7 @@ static const char *const selftest_cmds[] = {
     "!status",
     "ls f0",
     "get small.txt empty.bin big.bin nothere.bin",
+    "get pat.bin",
     "cd m%C3%BAsica",
     "get x.txt",
     "cd ..",

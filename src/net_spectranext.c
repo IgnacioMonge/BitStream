@@ -56,6 +56,7 @@ static uint8_t nx_fd[2] = { NX_NONE, NX_NONE };
 static uint16_t nx_dbg_polls;
 static uint8_t nx_dbg_r, nx_dbg_fl;
 static uint16_t nx_dbg_rx;
+static uint16_t nx_dbg_recvs, nx_dbg_maxbc, nx_dbg_short;
 #endif
 static uint8_t nx_hup[2];           // peer closed and fully drained
 
@@ -119,6 +120,9 @@ static int16_t nx_recv(uint8_t s, uint8_t *dst, uint16_t max)
         if (spxn_regs.bc > max) goto hup;
 #ifdef BITSTREAM_SELFTEST
         nx_dbg_rx += spxn_regs.bc;
+        nx_dbg_recvs++;
+        if (spxn_regs.bc > nx_dbg_maxbc) nx_dbg_maxbc = spxn_regs.bc;
+        if (spxn_regs.bc < max) nx_dbg_short++;
 #endif
         return (int16_t)spxn_regs.bc;
     }

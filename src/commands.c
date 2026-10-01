@@ -94,7 +94,9 @@ static void cmd_status(void)
         p = str_append(p, " fl="); p = u16_to_dec(p, nx_dbg_fl);
         p = str_append(p, " rx="); p = u16_to_dec(p, nx_dbg_rx);
         p = str_append(p, " fd="); p = u16_to_dec(p, nx_fd[0]);
-        p = str_append(p, " h="); p = u16_to_dec(p, rb_head);
+        p = str_append(p, " n="); p = u16_to_dec(p, nx_dbg_recvs);
+        p = str_append(p, " mx="); p = u16_to_dec(p, nx_dbg_maxbc);
+        p = str_append(p, " sh="); p = u16_to_dec(p, nx_dbg_short);
         main_print(tx_buffer);
     }
 #endif

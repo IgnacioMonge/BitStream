@@ -897,6 +897,9 @@ static uint8_t download_file_core(const char *remote, const char *local, uint8_t
 
     fs_close(handle);
     if (!err && !fs_commit(local_name)) err = "Commit failed";
+#ifdef BITSTREAM_SELFTEST
+    if (err == S_SIZE_FAIL) { fs_commit(local_name); err = ""; fail(S_SIZE_FAIL); }  // keep for analysis
+#endif
     if (err) fs_remove(local_name);
 
     if (err) {
