@@ -365,6 +365,9 @@ static void cmd_open(const char *host, uint16_t port)
         return;
     }
 
+#ifdef BITSTREAM_SELFTEST_PROBE
+    net_ctrl_send("NOOP\r\n", 6);     // diagnostic: does RX need a prior TX?
+#endif
     current_attr = ATTR_LOCAL;
     main_print("Waiting for banner.");
     drain_mode_fast();
