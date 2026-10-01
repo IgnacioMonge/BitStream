@@ -273,6 +273,11 @@ static void net_data_close(void)
     nx_close(NX_DATA);
 }
 
+static uint8_t net_data_midframe(void)
+{
+    return 0;                       // TCP backpressure in the cart: nothing to lose
+}
+
 static int16_t net_data_read(uint8_t *dst, uint16_t max)
 {
     return nx_recv(NX_DATA, dst, max);

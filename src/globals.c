@@ -202,10 +202,10 @@ extern void st_copy_n(char *dst, const char *src, uint8_t max_len);
 // ============================================================================
 
 static char wifi_client_ip[16] = "0.0.0.0";
-static char ftp_host[32] = "---";
+static char ftp_host[48] = "---";   // full !CONNECT host (PASV fallback uses it)
 static char ftp_user[20] = "---";
 static char ftp_path[PATH_SIZE] = "---";
-static char data_ip[32];   // dotted PASV address, or ftp_host when unroutable
+static char data_ip[48];   // dotted PASV address, or ftp_host when unroutable
 
 static uint16_t data_port;
 static uint8_t connection_state = STATE_DISCONNECTED;

@@ -6,7 +6,6 @@
 // ============================================================================
 
 extern uint8_t detect_esxdos(void);
-extern int __LIB__ esxdos_f_unlink(void *filename) __smallc __z88dk_fastcall;
 
 static uint8_t fs_init(void)
 {
@@ -108,7 +107,16 @@ static void fs_close(uint8_t h) __z88dk_fastcall
 
 static void fs_remove(const char *name) __z88dk_fastcall
 {
-    esxdos_f_unlink((void *)name);
+    (void)name;
+    __asm
+        push ix
+        push hl
+        pop ix              ; IX = HL = name
+        ld a, '*'           ; default drive
+        rst 0x08
+        defb 0xAD           ; F_UNLINK
+        pop ix
+    __endasm;
 }
 
 static uint8_t fs_commit(const char *name) __z88dk_fastcall

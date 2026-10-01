@@ -25,6 +25,7 @@ static uint16_t reply_code(const char *p) __z88dk_fastcall
 
     if (p[0] < '1' || p[0] > '5') return 0;
     if (p[1] < '0' || p[1] > '9' || p[2] < '0' || p[2] > '9') return 0;
+    if (p[3] && p[3] != ' ' && p[3] != '-') return 0;
     d = (uint8_t)(p[0] - '0');
     code = ((uint16_t)d << 6) + ((uint16_t)d << 5) + ((uint16_t)d << 2);   // *100
     d = (uint8_t)(p[1] - '0');
@@ -53,8 +54,8 @@ static uint16_t ftp_wait_reply(uint16_t max_frames, uint8_t transfer)
     while (max_frames--) {
         while ((p = net_ctrl_line()) != NULL) {
             code = reply_code(p);
-            if (!code) continue;
-            if (!transfer && (code < 200 || code == 226 || code == 426)) continue;
+            if (code < 200) continue;           // none, or preliminary 1xx
+            if (!transfer && (code == 226 || code == 426)) continue;
             reply_text = p;
             return code;
         }
@@ -146,7 +147,7 @@ static uint16_t ftp_passive(void)
     }
 
     // "227 Entering Passive Mode (h1,h2,h3,h4,p1,p2)" - parentheses optional
-    p = reply_text + 4;
+    p = reply_text + 3;
     while (*p && (*p < '0' || *p > '9')) p++;
     for (i = 0; i < 6; i++) {
         if (*p < '0' || *p > '9') goto bad;
@@ -192,6 +193,7 @@ bad:
 
 static uint16_t xfer_code;          // last final reply seen during the transfer
 static uint16_t xfer_silence;
+static uint8_t xfer_spin;           // polls without HALT while a frame is mid-way
 
 // PASV, open the data connection, send the command
 static uint8_t ftp_transfer_begin(const char *cmd) __z88dk_fastcall
@@ -200,6 +202,7 @@ static uint8_t ftp_transfer_begin(const char *cmd) __z88dk_fastcall
     xfer_silence = 0;
     if (!ftp_passive()) return 0;
     if (!net_data_open(data_ip, data_port)) {
+        net_data_close();           // a late "1,CONNECT" must not leave link 1 busy
         fail(S_DATA_FAIL);
         return 0;
     }
@@ -238,6 +241,8 @@ static int16_t ftp_xfer_read(uint8_t *buf, uint16_t max)
         return XFER_ERR;
     }
     if (key_break_down()) return XFER_CANCEL;
+    if (net_data_midframe() && ++xfer_spin) return 0;   // bytes due: poll, a HALT costs ~230 B
+    xfer_spin = 0;
     HALT();
     if (++xfer_silence > XFER_SILENCE) return XFER_TIMEOUT;
     return 0;
@@ -453,7 +458,8 @@ static uint8_t pwd_core(uint8_t silent) __z88dk_fastcall
         }
         *w = 0;
     } else {
-        start = reply_text + 4;
+        start = reply_text + 3;
+        while (*start == ' ') start++;
         end = start + strlen(start);
         while (end > start && (end[-1] == ' ' || end[-1] == '\r')) *--end = 0;
     }
@@ -776,7 +782,8 @@ static uint32_t download_request_size(const char *remote)
 
     if (ftp_cmd_reply(tx_buffer, 100) != 213) return 0;
 
-    ps = reply_text + 4;
+    ps = reply_text + 3;
+    while (*ps == ' ') ps++;
     while (*ps >= '0' && *ps <= '9') {
         file_size = file_size * 10 + (*ps - '0');
         ps++;
@@ -789,7 +796,7 @@ static uint8_t download_file_core(const char *remote, const char *local, uint8_t
     uint32_t received = 0;
     uint32_t file_size;
     uint32_t last_progress = 0;
-    uint8_t handle = FS_BAD;
+    uint8_t handle;
     char local_name[16];
     int16_t n = 0;
     uint16_t code;
@@ -829,24 +836,31 @@ static uint8_t download_file_core(const char *remote, const char *local, uint8_t
         p = str_append(p, "RETR ");
         p = str_append(p, remote);
     }
-    if (!ftp_transfer_begin(tx_buffer)) return 0;
+    // Create the file before RETR: an esxDOS create (directory scan + new
+    // entry) must not stall the UART while data is already streaming. A
+    // refused or failed transfer unlinks it below.
+    handle = fs_create(local_name);
+    if (handle == FS_BAD) {
+        fail("Cannot create local file");
+        return 0;
+    }
+    if (!ftp_transfer_begin(tx_buffer)) {
+        fs_close(handle);
+        fs_remove(local_name);
+        return 0;
+    }
 
     draw_progress_bar(local_name, 0, file_size);
     drain_mode_fast();
 
     // ========================================================================
-    // DOWNLOAD LOOP: the local file is created on the first data byte (or at
-    // EOF for an empty file), so a refused RETR never leaves a file behind.
+    // DOWNLOAD LOOP
     // ========================================================================
     while (1) {
         n = ftp_xfer_read(file_buffer + file_buf_pos, sizeof(file_buffer) - file_buf_pos);
         if (n == 0) continue;
         if (n < 0) break;
 
-        if (handle == FS_BAD) {
-            handle = fs_create(local_name);
-            if (handle == FS_BAD) { err = "Cannot create local file"; break; }
-        }
         file_buf_pos += (uint16_t)n;
         if (file_buf_pos == sizeof(file_buffer)) {
             if (fs_write(handle, file_buffer, file_buf_pos) != file_buf_pos) {
@@ -865,9 +879,7 @@ static uint8_t download_file_core(const char *remote, const char *local, uint8_t
     drain_mode_normal();
 
     if (n == NET_EOF && !err) {
-        if (handle == FS_BAD) handle = fs_create(local_name);
-        if (handle == FS_BAD) err = "Cannot create local file";
-        else if (file_buf_pos) {
+        if (file_buf_pos) {
             if (fs_write(handle, file_buffer, file_buf_pos) != file_buf_pos) err = "Write error";
             else received += file_buf_pos;
         }
@@ -883,11 +895,9 @@ static uint8_t download_file_core(const char *remote, const char *local, uint8_t
         net_data_close();
     }
 
-    if (handle != FS_BAD) {
-        fs_close(handle);
-        if (!err && !fs_commit(local_name)) err = "Commit failed";
-        if (err) fs_remove(local_name);
-    }
+    fs_close(handle);
+    if (!err && !fs_commit(local_name)) err = "Commit failed";
+    if (err) fs_remove(local_name);
 
     if (err) {
         if (err[0]) fail(err);
@@ -1160,12 +1170,8 @@ static void cmd_list_core(const char *a1, const char *a2, const char *a3)
     }
     main_print(tx_buffer);
 
-    if (list_pause_risky && connection_state >= STATE_FTP_CONNECTED) {
-        if (!quick_noop_check(FRAMES_NOOP_QUICK_TIMEOUT)) {
-            clear_ftp_state();
-            fail("NOOP timeout");
-            draw_status_bar();
-        }
+    if (list_pause_risky && !stopped && connection_state >= STATE_FTP_CONNECTED) {
+        if (!quick_noop_check(FRAMES_NOOP_QUICK_TIMEOUT)) connection_lost();
     }
 }
 

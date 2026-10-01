@@ -241,16 +241,10 @@ trln_newline:
     add hl, de
     ld (hl), 0
 
-    ; Check overflow
-    ld a, (_rx_overflow)
-    or a
-    jr z, trln_check_pos
-
-    ; Overflow: discard line, reset, continue
+    ; An overlong line is returned truncated (FTP reply codes sit at the
+    ; start; dropping the line would turn a long 550/257 into a timeout)
     xor a
     ld (_rx_overflow), a
-    ld (_rx_pos), a
-    jr trln_loop
 
 trln_check_pos:
     ; If rx_pos > 0, we have a valid line

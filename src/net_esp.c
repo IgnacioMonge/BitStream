@@ -224,6 +224,9 @@ static void full_initialization_sequence(void)
 
     ay_uart_init();             // also clears the TX fail-stop latch
     setup_ftp_mode();
+    uart_send_string("AT+CIPCLOSE=5\r\n");   // links left open by a failed session
+    wait_frames(5);
+    uart_flush_rx();
 
     main_puts("Probing ESP.");
 
@@ -400,7 +403,7 @@ static void dm_ctrl_byte(uint8_t c) __z88dk_fastcall
 {
     if (c == '\r') return;
     if (c == '\n') {
-        if (rx_pos && !rx_overflow) {
+        if (rx_pos) {                       // overlong lines arrive truncated
             rx_line[rx_pos] = 0;
             ctrl_ready = 1;
         }
@@ -481,6 +484,21 @@ static uint8_t esp_wait_ev(uint8_t mask, uint16_t frames)
     return 0;
 }
 
+// CIPSEND prompt: never abandoned on BREAK. Once AT+CIPSEND=n is out, the
+// ESP waits for exactly n payload bytes; leaving here early would make the
+// next AT command the FTP server's input.
+static uint8_t esp_wait_prompt(void)
+{
+    uint8_t frames = 150;
+    while (frames--) {
+        dm_process();
+        if (ev_flags & EV_PROMPT) return 1;
+        if ((ev_flags & EV_ERROR) || uart_tx_failed) return 0;
+        HALT();
+    }
+    return 0;
+}
+
 // Before a new AT command: let an outstanding CIPSEND finish ("busy s...")
 static void esp_settle(void)
 {
@@ -507,7 +525,9 @@ static uint8_t esp_tcp_connect(uint8_t sock, const char *host, uint16_t port)
         p = u16_to_dec(p, port);
     }
     esp_send_at(at_buffer);
-    return esp_wait_ev(ev, 500);
+    if (!esp_wait_ev(ev, 500)) return 0;
+    esp_wait_ev(EV_OK, 25);         // let CIPSTART finish: next command gets "busy p..." otherwise
+    return 1;
 }
 
 static void esp_tcp_close(uint8_t sock) __z88dk_fastcall
@@ -535,7 +555,7 @@ static uint8_t esp_tcp_send(uint8_t sock, const char *data, uint16_t len)
         p = u16_to_dec(p, len);
     }
     esp_send_at(at_buffer);
-    if (!esp_wait_ev(EV_PROMPT, 150)) return 0;
+    if (!esp_wait_prompt()) return 0;
 
     ay_uart_send_block((void *)data, len);
     send_pending = 1;
@@ -601,6 +621,12 @@ static void net_data_close(void)
     dm_discard = 1;                     // skip whatever link-1 payload is left
     if (!(ev_flags & EV_CLOSED1)) esp_tcp_close(1);
     wait_poll(5);
+}
+
+// A link-1 frame is partly received: more bytes are due within a byte time
+static uint8_t net_data_midframe(void)
+{
+    return dm_state == DM_DATA && !dm_discard;
 }
 
 static int16_t net_data_read(uint8_t *dst, uint16_t max)

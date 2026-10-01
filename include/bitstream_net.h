@@ -34,6 +34,7 @@ static uint8_t  net_ctrl_lost(void);         // peer closed / transport dead
 static uint8_t  net_data_open(const char *ip, uint16_t port);
 static void     net_data_close(void);
 static int16_t  net_data_read(uint8_t *dst, uint16_t max);  // >0, 0, NET_EOF
+static uint8_t  net_data_midframe(void);     // more data due now: do not HALT
 
 // --- storage ---
 #define FS_BAD  0xFF
