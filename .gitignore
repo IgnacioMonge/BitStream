@@ -2,3 +2,4 @@ build/
 *.o
 *.lis
 *.sym
+__pycache__/
