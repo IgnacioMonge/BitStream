@@ -12,7 +12,6 @@
 static const char S_SIZE_FAIL[] = "Size mismatch";
 
 static uint8_t quick_noop_check(uint16_t max_frames) __z88dk_fastcall;
-static uint8_t is_dotted_unroutable(const char *s) __z88dk_fastcall;
 
 static uint16_t ml_code;            // multi-line reply in progress ("ddd-")
 static char *reply_text;            // text of the last reply returned
@@ -163,9 +162,10 @@ static uint16_t ftp_passive(void)
     data_port = ((uint16_t)octets[4] << 8) | octets[5];
     if (!data_port) goto bad;
 
-    // A server behind NAT often advertises its private address: the data
-    // server is the control server, so connect to the host we already reach.
-    if (is_unroutable(octets) && !is_dotted_unroutable(ftp_host)) {
+    // A server behind NAT (or a container) often advertises an address the
+    // client cannot reach. The data server is the control server, so use the
+    // host the control connection already reaches (FileZilla does the same).
+    if (is_unroutable(octets)) {
         safe_copy(data_ip, ftp_host, sizeof(data_ip));
     } else {
         char *q = data_ip;
@@ -670,28 +670,6 @@ static uint8_t str_contains(const char *haystack, const char *needle)
         if (!*np) return 1;
     }
     return 0;
-}
-
-// Dotted IPv4 literal in a private/unroutable range?
-static uint8_t is_dotted_unroutable(const char *s) __z88dk_fastcall
-{
-    uint8_t o[4];
-    uint8_t i;
-    char *p = (char *)s;
-    uint16_t v;
-
-    for (i = 0; i < 4; i++) {
-        if (*p < '0' || *p > '9') return 0;
-        v = parse_decimal(&p);
-        if (v > 255) return 0;
-        o[i] = (uint8_t)v;
-        if (i < 3) {
-            if (*p != '.') return 0;
-            p++;
-        }
-    }
-    if (*p) return 0;
-    return is_unroutable(o);
 }
 
 // ============================================================================
