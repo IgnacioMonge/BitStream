@@ -65,12 +65,11 @@ SECTION bss_user
 '''
         (tmp / 'h.asm').write_text(harness, encoding='utf-8')
         (tmp / 'k.asm').write_text(asm_text, encoding='utf-8')
-        r = subprocess.run(['z88dk-z80asm', '-b', '-m', '-o' + str(tmp / 'out.bin'),
+        r = subprocess.run(['z88dk-z80asm', '-b', '-o' + str(tmp / 'out.bin'),
                             str(tmp / 'h.asm'), str(tmp / 'k.asm')],
                            capture_output=True, text=True)
         assert r.returncode == 0, r.stdout + r.stderr
-        bins = sorted(tmp.glob('out*.bin'))
-        code = (tmp / 'out.bin').read_bytes() if (tmp / 'out.bin').exists() else bins[0].read_bytes()
+        code = (tmp / 'out_code_user.bin').read_bytes()   # bss_user is not emitted
         mem = bytearray(65536)
         rnd = random.Random(7)
         mem[0x4000:0x5B00] = bytes(rnd.randrange(256) for _ in range(0x1B00))
