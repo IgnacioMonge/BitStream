@@ -125,6 +125,7 @@ static void print_intro_banner(void)
 // keys (FuseX/Spectranext). Never ship this build.
 static const char *const selftest_cmds[] = {
     "!connect 127.0.0.1:2121 anonymous zx@zx.net",
+    "!status",
     "ls f0",
     "get small.txt empty.bin big.bin nothere.bin",
     "cd m%C3%BAsica",

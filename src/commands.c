@@ -86,6 +86,18 @@ static void cmd_status(void)
         current_attr = ATTR_RESPONSE;
     }
 
+#if defined(BITSTREAM_SELFTEST) && defined(BITSTREAM_SPECTRANEXT)
+    {
+        char *p = tx_buffer;
+        p = str_append(p, "dbg polls="); p = u16_to_dec(p, nx_dbg_polls);
+        p = str_append(p, " r="); p = u16_to_dec(p, nx_dbg_r);
+        p = str_append(p, " fl="); p = u16_to_dec(p, nx_dbg_fl);
+        p = str_append(p, " rx="); p = u16_to_dec(p, nx_dbg_rx);
+        p = str_append(p, " fd="); p = u16_to_dec(p, nx_fd[0]);
+        p = str_append(p, " h="); p = u16_to_dec(p, rb_head);
+        main_print(tx_buffer);
+    }
+#endif
     main_puts("State: ");
     if (connection_state == STATE_DISCONNECTED) main_print(S_DISCONN);
     else if (connection_state == STATE_WIFI_OK) main_print("WiFi OK");

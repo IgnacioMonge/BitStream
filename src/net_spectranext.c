@@ -52,6 +52,11 @@ extern uint8_t spxn_rom_ixcall(uint16_t addr) __z88dk_fastcall;
 extern int16_t spxn_rom_detect(void);
 
 static uint8_t nx_fd[2] = { NX_NONE, NX_NONE };
+#ifdef BITSTREAM_SELFTEST
+static uint16_t nx_dbg_polls;
+static uint8_t nx_dbg_r, nx_dbg_fl;
+static uint16_t nx_dbg_rx;
+#endif
 static uint8_t nx_hup[2];           // peer closed and fully drained
 
 static void nx_close(uint8_t s) __z88dk_fastcall
@@ -100,6 +105,9 @@ static int16_t nx_recv(uint8_t s, uint8_t *dst, uint16_t max)
     if (nx_fd[s] == NX_NONE || nx_hup[s]) return NET_EOF;
     spxn_regs.a = nx_fd[s];
     r = spxn_rom_hlcall(ROM_POLLFD);
+#ifdef BITSTREAM_SELFTEST
+    nx_dbg_polls++; nx_dbg_r = r; nx_dbg_fl = (uint8_t)spxn_regs.bc;
+#endif
     if (r & ROM_CARRY) goto hup;
     if (r & ROM_ZERO) return 0;
     r = (uint8_t)spxn_regs.bc;
@@ -109,6 +117,9 @@ static int16_t nx_recv(uint8_t s, uint8_t *dst, uint16_t max)
         spxn_regs.bc = max;
         if (spxn_rom_hlcall(ROM_RECV) & ROM_CARRY) goto hup;
         if (spxn_regs.bc > max) goto hup;
+#ifdef BITSTREAM_SELFTEST
+        nx_dbg_rx += spxn_regs.bc;
+#endif
         return (int16_t)spxn_regs.bc;
     }
     if (r & (POLLHUP | POLLNVAL)) goto hup;
