@@ -98,6 +98,10 @@ BitStream will prompt for username and password interactively. Press `ENTER` to 
 
 - **UP/DOWN** - command history
 - **LEFT/RIGHT** - move cursor in the input line
+- **SYMBOL+CAPS SHIFT + 5 / 8** - previous / next word
+- **SYMBOL+CAPS SHIFT + 7 / 6** - start / end of line
+- **SYMBOL+CAPS SHIFT + 0** - delete the word before the cursor
+- **CAPS SHIFT + 2** - CAPS LOCK (the cursor moves to the top of the cell)
 - **BREAK** - cancel the current operation
 - **ENTER** - execute command
 

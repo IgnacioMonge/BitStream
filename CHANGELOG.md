@@ -27,6 +27,8 @@ See `docs/audit-2026-10.md` for the full audit.
 - PASV replies with an unroutable (NAT) address connect to the control host
 - ESP links left open after failed connects are closed; `!INIT` closes all links
 - Cursor caps indicator no longer flickers on CAPS chords (arrows, DELETE, BREAK)
+- Static variables were not zeroed at startup (BSS trimmed from the TAP and
+  not cleared by the CRT): a warm load inherited stale state
 
 ### Changed
 - Transport/storage seam (`include/bitstream_net.h`) with an `+IPD`
@@ -34,10 +36,17 @@ See `docs/audit-2026-10.md` for the full audit.
 - Local file is created right before RETR (no esxDOS work while data streams)
 - Scroll runs with interrupts enabled, unrolled LDI, UART drained first
 - `print_line64_fast` skips glyph unpacking for blank pairs
-- About 1.5 KB less code/BSS (more stack headroom)
+- Keyboard scan, key repeat and input-line cell drawing moved to asm
+  (SpecTalkZX); text keys auto-repeat
+- Classic builds run a resident IM2 frame interrupt (NetChessZX): no divMMC
+  automap or ROM keyboard scan on every frame
+- Plain lines longer than 64 columns wrap at the last space
+- About 1.9 KB less code/BSS (more stack headroom)
 
 ### Added
 - Spectranext build (`make spectranext SPXN_DIR=...`): cartridge sockets + XFS
+- Word/line editing: SYMBOL+CAPS SHIFT + 5/8 (word), 7/6 (line start/end),
+  0 (delete word)
 - `tools/test_asm_cpu.py` (z88dk-ticks) and `tools/e2e_zesarux.py`
   (ZEsarUX + ZXESPEmu + pyftpdlib) test harnesses
 
