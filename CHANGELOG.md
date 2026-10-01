@@ -41,7 +41,7 @@ See `docs/audit-2026-10.md` for the full audit.
 - Classic builds run a resident IM2 frame interrupt (NetChessZX): no divMMC
   automap or ROM keyboard scan on every frame
 - Plain lines longer than 64 columns wrap at the last space
-- About 1.5 KB less code/BSS (more stack headroom)
+- About 1 KB less code/BSS than 1.3.0 (more stack headroom)
 
 ### Added
 - Spectranext build (`make spectranext SPXN_DIR=...`): cartridge sockets + XFS
