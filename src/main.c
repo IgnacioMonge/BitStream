@@ -119,6 +119,37 @@ static void print_intro_banner(void)
     main_print("(C) 2026 M. Ignacio Monge Garcia");
 }
 
+#ifdef BITSTREAM_SELFTEST
+// Emulator self-test (make EXTRA_CFLAGS=-DBITSTREAM_SELFTEST): runs a fixed
+// session against tools/e2e_*.py's FTP tree, for emulators that cannot inject
+// keys (FuseX/Spectranext). Never ship this build.
+static const char *const selftest_cmds[] = {
+    "!connect 127.0.0.1:2121 anonymous zx@zx.net",
+    "ls f0",
+    "get small.txt empty.bin big.bin nothere.bin",
+    "cd m%C3%BAsica",
+    "get x.txt",
+    "cd ..",
+    "ls caf",
+    "!status",
+    0
+};
+#endif
+
+static void run_command(char *cmd) __z88dk_fastcall
+{
+    history_add(cmd, strlen(cmd));
+    current_attr = ATTR_USER;
+    main_puts2("> ", cmd);
+    main_newline();
+    input_clear();
+    set_input_busy(1);
+    check_connection_alive();
+    parse_command(cmd);
+    draw_status_bar();
+    set_input_busy(0);
+}
+
 // ~4 minutes at 50fps = 12000 frames
 #define KEEPALIVE_INTERVAL 12000
 
@@ -147,6 +178,20 @@ void main(void)
     main_newline();
 
     redraw_input_from(0);
+
+#ifdef BITSTREAM_SELFTEST
+    {
+        static char cmd_buf[LINE_BUFFER_SIZE];
+        const char *const *t;
+        for (t = selftest_cmds; *t; t++) {
+            safe_copy(cmd_buf, *t, sizeof(cmd_buf));
+            run_command(cmd_buf);
+            ui_flush_dirty();
+        }
+        current_attr = ATTR_RESPONSE;
+        main_print("SELFTEST DONE");
+    }
+#endif
 
     while (1) {
         HALT();
@@ -215,23 +260,7 @@ void main(void)
             if (line_len > 0) {
                 static char cmd_copy[LINE_BUFFER_SIZE];
                 memcpy(cmd_copy, line_buffer, line_len + 1);
-
-                history_add(cmd_copy, line_len);
-
-                current_attr = ATTR_USER;
-                main_puts2("> ", cmd_copy);
-                main_newline();
-
-                input_clear();
-
-                set_input_busy(1);
-
-                check_connection_alive();
-
-                parse_command(cmd_copy);
-
-                draw_status_bar();
-                set_input_busy(0);
+                run_command(cmd_copy);
             }
         }
         else if (c >= 32 && c <= 126) {
