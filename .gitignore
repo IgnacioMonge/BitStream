@@ -3,3 +3,4 @@ build/
 *.lis
 *.sym
 __pycache__/
+.bpe_originals/

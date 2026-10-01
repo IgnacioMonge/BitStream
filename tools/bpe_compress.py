@@ -26,6 +26,8 @@ from collections import Counter
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SCRIPT_DIR)
 BUILD_DIR = os.path.join(ROOT, 'build')
+# Outside build/: `make clean` between targets must not delete the backup
+BPE_ORIGINALS = os.path.join(ROOT, '.bpe_originals')
 
 SRC_C_FILES = ['globals.c', 'ui.c', 'comms.c', 'net_esp.c', 'net_spectranext.c',
                'fs_esx.c', 'fs_spectranext.c', 'ftp.c', 'commands.c', 'main.c']
@@ -370,7 +372,12 @@ def patch_asm_dict(src_dir, out_dir, dict_asm):
 def main():
     src_dir = os.path.join(ROOT, 'src')
     bpe_final = os.path.join(BUILD_DIR, 'bpe_final')
-    bpe_originals = os.path.join(BUILD_DIR, 'bpe_originals')
+    bpe_originals = BPE_ORIGINALS
+
+    # An interrupted build (or a concurrent one) can leave compressed sources
+    # installed: put the originals back before taking a new backup, or the
+    # compressed text would become the "original".
+    restore()
 
     # 1. Extract screen-only strings
     strings = extract_screen_strings(src_dir)
@@ -421,8 +428,8 @@ def main():
 
 
 def restore():
-    """Restore original source files from backup."""
-    bpe_originals = os.path.join(BUILD_DIR, 'bpe_originals')
+    """Restore original source files from backup, then drop the backup."""
+    bpe_originals = BPE_ORIGINALS
     if not os.path.exists(bpe_originals):
         return
     src_dir = os.path.join(ROOT, 'src')
@@ -433,6 +440,7 @@ def restore():
     orig_asm = os.path.join(bpe_originals, ASM_FILE)
     if os.path.exists(orig_asm):
         shutil.copy2(orig_asm, os.path.join(ROOT, 'asm', ASM_FILE))
+    shutil.rmtree(bpe_originals, ignore_errors=True)
 
 
 if __name__ == '__main__':
