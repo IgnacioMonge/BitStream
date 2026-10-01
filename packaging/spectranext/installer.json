@@ -1,0 +1,17 @@
+{
+  "resource": "BitStreamZX",
+  "stem": "BITSTRM",
+  "version": "1.4.0-dev",
+  "minimum_firmware": "0.9-6fc153a3",
+  "launch": {
+    "tap": "BITSTRM.TAP",
+    "mode": "tape-compact"
+  },
+  "files": [
+    {
+      "source": "../../build/BitStream_Spectranext.tap",
+      "name": "BITSTRM.TAP",
+      "role": "TAPE"
+    }
+  ]
+}

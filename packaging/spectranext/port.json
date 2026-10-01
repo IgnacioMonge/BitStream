@@ -1,0 +1,50 @@
+{
+  "schema": 2,
+  "product": {
+    "name": "BitStreamZX",
+    "slug": "bitstream",
+    "stem": "BITSTRM"
+  },
+  "repository": {
+    "path": "../..",
+    "base": "main",
+    "branch": "audit-2026-10",
+    "worktree": "BitStream"
+  },
+  "capabilities": {
+    "network": true,
+    "configuration": false,
+    "mutable_storage": true,
+    "clock": false
+  },
+  "installer": {
+    "manifest": "installer.json",
+    "output": "../../build/spectranext-resource",
+    "preview": "../../build/installer-preview.png"
+  },
+  "checks": {
+    "host": [["make", "NO_COLOR=1", "check"]],
+    "classic": [["make", "NO_COLOR=1"]],
+    "spectranext": [["make", "NO_COLOR=1", "spectranext", "SPXN_DIR={spectranext}/driver"]]
+  },
+  "artifacts": [
+    {
+      "path": "build/BitStream_Spectranext.tap",
+      "role": "TAPE"
+    }
+  ],
+  "allowed_changes": [
+    "Makefile",
+    "include/bitstream_net.h",
+    "src/main_build.c",
+    "src/net_spectranext.c",
+    "src/fs_spectranext.c",
+    "asm/bitstream_asm.asm",
+    "packaging/spectranext/**"
+  ],
+  "protected_changes": [
+    "src/ftp.c",
+    "src/commands.c",
+    "src/ui.c"
+  ]
+}
