@@ -353,6 +353,9 @@ static uint8_t  dm_discard;     // drop link-1 payload (after net_data_close)
 static uint8_t  ev_flags;
 static uint8_t  ctrl_ready;     // rx_line holds a complete, unread reply line
 static uint8_t  send_pending;   // CIPSEND issued, "SEND OK" not seen yet
+// AT command line. Never tx_buffer: callers keep FTP commands and UI text
+// there across transport calls (e.g. "RETR x" survives PASV + CIPSTART).
+static char     at_buffer[80];  // CIPSTART with a 47-char host (parse_command arg1)
 
 static void dm_reset(void)
 {
@@ -495,7 +498,7 @@ static uint8_t esp_tcp_connect(uint8_t sock, const char *host, uint16_t port)
     esp_settle();
     ev_flags &= (uint8_t)~(sock ? (EV_CONN1 | EV_CLOSED1) : (EV_CONN0 | EV_CLOSED0));
     {
-        char *p = tx_buffer;
+        char *p = at_buffer;
         p = str_append(p, "AT+CIPSTART=");
         p = u16_to_dec(p, (uint16_t)sock);
         p = str_append(p, ",\"TCP\",\"");
@@ -503,7 +506,7 @@ static uint8_t esp_tcp_connect(uint8_t sock, const char *host, uint16_t port)
         p = str_append(p, "\",");
         p = u16_to_dec(p, port);
     }
-    esp_send_at(tx_buffer);
+    esp_send_at(at_buffer);
     return esp_wait_ev(ev, 500);
 }
 
@@ -511,11 +514,11 @@ static void esp_tcp_close(uint8_t sock) __z88dk_fastcall
 {
     esp_settle();
     {
-        char *p = tx_buffer;
+        char *p = at_buffer;
         p = str_append(p, "AT+CIPCLOSE=");
         p = u16_to_dec(p, (uint16_t)sock);
     }
-    esp_send_at(tx_buffer);
+    esp_send_at(at_buffer);
     esp_wait_ev(EV_OK, 100);
     ev_flags |= sock ? EV_CLOSED1 : EV_CLOSED0;
 }
@@ -525,13 +528,13 @@ static uint8_t esp_tcp_send(uint8_t sock, const char *data, uint16_t len)
     if (uart_tx_failed) return 0;
     esp_settle();
     {
-        char *p = tx_buffer;
+        char *p = at_buffer;
         p = str_append(p, "AT+CIPSEND=");
         p = u16_to_dec(p, (uint16_t)sock);
         p = char_append(p, ',');
         p = u16_to_dec(p, len);
     }
-    esp_send_at(tx_buffer);
+    esp_send_at(at_buffer);
     if (!esp_wait_ev(EV_PROMPT, 150)) return 0;
 
     ay_uart_send_block((void *)data, len);
