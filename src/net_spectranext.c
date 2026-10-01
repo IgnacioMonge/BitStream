@@ -186,9 +186,9 @@ static void net_boot(void)
         return;
     }
 
-    // $3EF0 op 0: controller status + IPv4 in the cart's host order
-    // (little-endian on the RP2350: ip[3] is the first octet; unverified on
-    // hardware, see docs/driver.md "status").
+    // $3EF0 op 0: controller status + 4 IPv4 bytes. FuseX returns them
+    // first-octet-first (127.0.0.1 -> 7F 00 00 01); not yet checked on the
+    // physical cart, whose docs call the order "host order".
     ip[0] = ip[1] = ip[2] = ip[3] = 0;
     spxn_regs.a = 0;
     spxn_regs.de = (uint16_t)ip;
@@ -196,10 +196,10 @@ static void net_boot(void)
 
     if (ip[0] | ip[1] | ip[2] | ip[3]) {
         char *p = wifi_client_ip;
-        p = u16_to_dec(p, ip[3]); p = char_append(p, '.');
-        p = u16_to_dec(p, ip[2]); p = char_append(p, '.');
+        p = u16_to_dec(p, ip[0]); p = char_append(p, '.');
         p = u16_to_dec(p, ip[1]); p = char_append(p, '.');
-        u16_to_dec(p, ip[0]);
+        p = u16_to_dec(p, ip[2]); p = char_append(p, '.');
+        u16_to_dec(p, ip[3]);
         connection_state = STATE_WIFI_OK;
         current_attr = ATTR_RESPONSE;
         main_print(" WiFi OK");

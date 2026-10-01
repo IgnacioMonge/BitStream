@@ -366,7 +366,11 @@ static void cmd_open(const char *host, uint16_t port)
     }
 
 #ifdef BITSTREAM_SELFTEST_PROBE
-    { spxn_regs.a = nx_fd[NX_CTRL]; spxn_regs.de = (uint16_t)ftp_cmd_buffer; spxn_regs.bc = 0; spxn_rom_hlcall(ROM_SEND); }  // diagnostic: zero-length SEND
+    // FuseX 1.9.2 test-only workaround: its W5100 I/O thread is not woken
+    // when a plain TCP CONNECT completes, so no RX is seen until the first
+    // SEND wakes it (peripherals/nic/w5100_socket.c, w5100_socket_connect
+    // wakes the selfpipe only for SSH). Never in a release build.
+    net_ctrl_send("NOOP\r\n", 6);
 #endif
     current_attr = ATTR_LOCAL;
     main_print("Waiting for banner.");
