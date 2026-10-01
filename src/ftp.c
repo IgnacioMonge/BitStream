@@ -1,17 +1,77 @@
 // ============================================================================
-// ftp.c - FTP protocol, esxDOS, download, list
+// ftp.c - FTP protocol, download, list (transport-independent)
+// ============================================================================
+// Everything here goes through the seam in include/bitstream_net.h.
+// Replies are matched by their code (RFC 959 "ddd " / multi-line "ddd-"),
+// never by searching the whole line.
 // ============================================================================
 
-// ============================================================================
-// FTP PROTOCOL LAYER
-// ============================================================================
+#define FTP_CANCEL  1       // ftp_wait_reply pseudo-codes (never real replies)
+#define FTP_LOST    2
+
+static const char S_SIZE_FAIL[] = "Size mismatch";
+
+static uint8_t quick_noop_check(uint16_t max_frames) __z88dk_fastcall;
+static uint8_t is_dotted_unroutable(const char *s) __z88dk_fastcall;
+
+static uint16_t ml_code;            // multi-line reply in progress ("ddd-")
+static char *reply_text;            // text of the last reply returned
+
+// "ddd " -> ddd. Continuation lines and text return 0. Inside a multi-line
+// reply only the line starting with the same code and a space ends it.
+static uint16_t reply_code(const char *p) __z88dk_fastcall
+{
+    uint16_t code;
+    uint8_t d;
+
+    if (p[0] < '1' || p[0] > '5') return 0;
+    if (p[1] < '0' || p[1] > '9' || p[2] < '0' || p[2] > '9') return 0;
+    d = (uint8_t)(p[0] - '0');
+    code = ((uint16_t)d << 6) + ((uint16_t)d << 5) + ((uint16_t)d << 2);   // *100
+    d = (uint8_t)(p[1] - '0');
+    code += ((uint16_t)d << 3) + ((uint16_t)d << 1);                     // *10
+    code += (uint8_t)(p[2] - '0');
+
+    if (p[3] == '-') {
+        if (!ml_code) ml_code = code;
+        return 0;
+    }
+    if (ml_code) {
+        if (code != ml_code) return 0;
+        ml_code = 0;
+    }
+    return code;
+}
+
+// Wait for the final reply to a command. Outside a transfer, preliminary
+// (1xx) and stale transfer replies (226/426 from an earlier LIST/RETR) are
+// skipped. Returns the code, 0 on timeout, FTP_CANCEL or FTP_LOST.
+static uint16_t ftp_wait_reply(uint16_t max_frames, uint8_t transfer)
+{
+    char *p;
+    uint16_t code;
+
+    while (max_frames--) {
+        while ((p = net_ctrl_line()) != NULL) {
+            code = reply_code(p);
+            if (!code) continue;
+            if (!transfer && (code < 200 || code == 226 || code == 426)) continue;
+            reply_text = p;
+            return code;
+        }
+        if (net_ctrl_lost()) return FTP_LOST;
+        if (key_break_down()) return FTP_CANCEL;
+        HALT();
+    }
+    return 0;
+}
 
 static uint8_t ftp_command(const char *cmd) __z88dk_fastcall
 {
     uint16_t len = strlen(cmd);
 
     if (len > (sizeof(ftp_cmd_buffer) - 3)) {
-        fail("Buffer overflow!");
+        fail("Command too long");
         return 0;
     }
 
@@ -20,213 +80,202 @@ static uint8_t ftp_command(const char *cmd) __z88dk_fastcall
     ftp_cmd_buffer[len + 1] = '\n';
     ftp_cmd_buffer[len + 2] = 0;
 
-    return esp_tcp_send(0, ftp_cmd_buffer, len + 2);
+    net_ctrl_discard();             // stale lines must not answer this command
+    ml_code = 0;
+    return net_ctrl_send(ftp_cmd_buffer, len + 2);
 }
 
-// parse_decimal is in asm/bitstream_asm.asm (sccz80 cdecl)
-extern uint16_t parse_decimal(char **pp);
-extern int __LIB__ esxdos_f_unlink(void *filename) __smallc __z88dk_fastcall;
-
-static uint16_t ftp_passive(void)
+static uint16_t ftp_cmd_reply(const char *cmd, uint16_t max_frames)
 {
-    uint16_t p1, p2;
-    char *p;
-    uint8_t i;
-    uint8_t octets[4];
-    uint16_t frames = 0;
+    if (!ftp_command(cmd)) return 0;
+    return ftp_wait_reply(max_frames, 0);
+}
 
-    if (!ftp_command("PASV")) {
-        main_print("[PASV send fail]");
-        return 0;
-    }
+// Show a server reply safely: UTF-8/Latin-1 folded to ASCII first, so no
+// byte >= 0x80 reaches the BPE expander.
+static void print_reply(const char *prefix, char *text)
+{
+    utf8_to_ascii(text);
+    current_attr = ATTR_ERROR;
+    main_puts(prefix);
+    main_print(text);
+}
 
-    rx_pos = 0;
+static void connection_lost(void)
+{
+    net_ctrl_close();
+    clear_ftp_state();
+    draw_status_bar();
+    fail("Connection lost");
+}
 
-    while (frames < 250) {
-        HALT();
+// Common failure report for a non-success reply code
+static void report_reply(uint16_t code, const char *what)
+{
+    if (code == FTP_CANCEL) fail(S_CANCEL);
+    else if (code == FTP_LOST || code == 421) connection_lost();
+    else if (code == 0) { main_puts2(what, ": "); fail("timeout"); }
+    else print_reply(S_ERROR_TAG, reply_text);
+}
 
-        if (key_break_down()) {
-            main_print(S_CANCEL);
-            return 0;
-        }
+// parse_decimal is in asm/bitstream_asm.asm (declared in comms.c)
 
-        uart_drain_to_buffer();
+// ============================================================================
+// PASSIVE MODE
+// ============================================================================
 
-        if (try_read_line()) {
-            if (strncmp(rx_line, S_IPD0, 7) == 0) {
-                p = strchr(rx_line, ':');
-                if (p && strstr(p, "227")) {
-                    p = strchr(p, '(');
-                    if (p) {
-                        p++;
-                        for (i = 0; i < 4; i++) {
-                            octets[i] = (uint8_t)parse_decimal(&p);
-                            if (*p == ',') p++;
-                        }
-                        {
-                            char *q = data_ip;
-                            q = u16_to_dec(q, (uint16_t)octets[0]);
-                            q = char_append(q, '.');
-                            q = u16_to_dec(q, (uint16_t)octets[1]);
-                            q = char_append(q, '.');
-                            q = u16_to_dec(q, (uint16_t)octets[2]);
-                            q = char_append(q, '.');
-                            q = u16_to_dec(q, (uint16_t)octets[3]);
-                        }
-
-                        p1 = parse_decimal(&p);
-                        if (*p == ',') p++;
-                        p2 = parse_decimal(&p);
-
-                        data_port = (p1 << 8) | p2;
-
-                        return data_port;
-                    }
-                }
-            }
-            rx_pos = 0;
-        }
-        frames++;
-    }
-    main_print("[PASV timeout]");
+static uint8_t is_unroutable(const uint8_t *o)
+{
+    if (o[0] == 0 || o[0] == 10 || o[0] == 127) return 1;
+    if (o[0] == 192 && o[1] == 168) return 1;
+    if (o[0] == 172 && o[1] >= 16 && o[1] <= 31) return 1;
+    if (o[0] == 169 && o[1] == 254) return 1;
     return 0;
 }
 
-static uint8_t ftp_open_data(void)
+static uint16_t ftp_passive(void)
 {
-    uint8_t result;
-    if (data_port == 0) {
-        main_print("[No data port]");
+    char *p;
+    uint8_t i;
+    uint8_t octets[6];
+    uint16_t v;
+    uint16_t code = ftp_cmd_reply("PASV", 250);
+
+    if (code != 227) {
+        report_reply(code, "PASV");
         return 0;
     }
 
-    result = esp_tcp_connect(1, data_ip, data_port);
-
-    return result;
-}
-
-static void ftp_close_data(void)
-{
-    esp_tcp_close(1);
-
-    uint16_t i;
-    for (i = 0; i < 25; i++) {
-        HALT();
-        uart_drain_to_buffer();
+    // "227 Entering Passive Mode (h1,h2,h3,h4,p1,p2)" - parentheses optional
+    p = reply_text + 4;
+    while (*p && (*p < '0' || *p > '9')) p++;
+    for (i = 0; i < 6; i++) {
+        if (*p < '0' || *p > '9') goto bad;
+        v = parse_decimal(&p);
+        if (v > 255) goto bad;
+        octets[i] = (uint8_t)v;
+        if (i < 5) {
+            if (*p != ',') goto bad;
+            p++;
+        }
     }
 
-    rb_flush();
+    data_port = ((uint16_t)octets[4] << 8) | octets[5];
+    if (!data_port) goto bad;
+
+    // A server behind NAT often advertises its private address: the data
+    // server is the control server, so connect to the host we already reach.
+    if (is_unroutable(octets) && !is_dotted_unroutable(ftp_host)) {
+        safe_copy(data_ip, ftp_host, sizeof(data_ip));
+    } else {
+        char *q = data_ip;
+        for (i = 0; i < 4; i++) {
+            q = u16_to_dec(q, (uint16_t)octets[i]);
+            if (i < 3) q = char_append(q, '.');
+        }
+    }
+    return data_port;
+
+bad:
+    fail("Bad PASV reply");
+    return 0;
 }
 
-// Setup PASV + data connection + send LIST command
-static uint8_t setup_list_transfer(void)
+// ============================================================================
+// TRANSFER ENGINE (LIST / RETR)
+// ============================================================================
+
+#define XFER_ERR     (-2)   // server error reply (xfer_code / reply_text)
+#define XFER_CANCEL  (-3)
+#define XFER_TIMEOUT (-4)
+#define XFER_SILENCE 500    // frames without data (10 s)
+
+static uint16_t xfer_code;          // last final reply seen during the transfer
+static uint16_t xfer_silence;
+
+// PASV, open the data connection, send the command
+static uint8_t ftp_transfer_begin(const char *cmd) __z88dk_fastcall
 {
-    rx_reset_all();
-
-    if (ftp_passive() == 0) {
-        fail(S_PASV_FAIL);
-        return 0;
-    }
-
-    if (!ftp_open_data()) {
+    xfer_code = 0;
+    xfer_silence = 0;
+    if (!ftp_passive()) return 0;
+    if (!net_data_open(data_ip, data_port)) {
         fail(S_DATA_FAIL);
         return 0;
     }
-
-    if (!ftp_command("LIST")) {
-        ftp_close_data();
-        fail(S_LIST_FAIL);
+    if (!ftp_command(cmd)) {
+        net_data_close();
+        fail("Send failed");
         return 0;
     }
-
-    wait_frames(3);
-
     return 1;
 }
 
-// ============================================================================
-// ESXDOS FILE OPERATIONS
-// ============================================================================
-
-static uint8_t esx_fopen_write(const char *filename)
+// Next block of transfer data. Returns >0 bytes, 0 (nothing yet; one frame
+// was waited), NET_EOF, XFER_ERR, XFER_CANCEL or XFER_TIMEOUT.
+static int16_t ftp_xfer_read(uint8_t *buf, uint16_t max)
 {
-    (void)filename;
-    __asm
-        ld hl, 2
-        add hl, sp
-        ld hl, (hl)
-        push hl
+    int16_t n = net_data_read(buf, max);
+    char *p;
+    uint16_t code;
 
-        xor a
-        rst 0x08
-        defb 0x89           ; ESX_GETSETDRV
-        jr c, esx_open_fail2
-
-        pop ix
-        ld b, 0x0E          ; FMODE_CREATE = create/truncate + write
-        rst 0x08
-        defb 0x9A           ; ESX_FOPEN
-        jr c, esx_open_fail
-        ld l, a
-        jr esx_open_done
-    esx_open_fail2:
-        pop hl              ; Clean stacked filename
-    esx_open_fail:
-        ld l, 255
-    esx_open_done:
-        ld h, 0
-    __endasm;
+    if (n > 0) {
+        xfer_silence = 0;
+        return n;
+    }
+    while ((p = net_ctrl_line()) != NULL) {
+        code = reply_code(p);
+        if (code >= 400) {
+            xfer_code = code;
+            reply_text = p;
+            return XFER_ERR;
+        }
+        if (code >= 200) xfer_code = code;
+    }
+    if (n == NET_EOF) return NET_EOF;
+    if (net_ctrl_lost()) {
+        xfer_code = FTP_LOST;
+        return XFER_ERR;
+    }
+    if (key_break_down()) return XFER_CANCEL;
+    HALT();
+    if (++xfer_silence > XFER_SILENCE) return XFER_TIMEOUT;
+    return 0;
 }
 
-// Global variables for esxDOS operations
-static uint8_t esx_handle;
-static void *esx_buffer;
-static uint16_t esx_length;
-
-static uint16_t esx_fwrite(uint8_t handle, void *buf, uint16_t len)
+// Close the data connection and collect the final reply (226/250 or error).
+static uint16_t ftp_transfer_end(void)
 {
-    esx_handle = handle;
-    esx_buffer = buf;
-    esx_length = len;
-
-    __asm
-        push ix              ; save frame pointer (IX used by sccz80)
-        ld a, (_esx_handle)
-        ld hl, (_esx_buffer)
-        push hl
-        pop ix
-        ld bc, (_esx_length)
-        rst 0x08
-        defb 0x9E           ; ESX_FWRITE
-        jr c, esx_write_fail
-        ld h, b
-        ld l, c
-        pop ix              ; restore frame pointer
-        jr esx_write_done
-    esx_write_fail:
-        pop ix              ; restore frame pointer
-        ld hl, 0
-    esx_write_done:
-    __endasm;
+    net_data_close();
+    if (!xfer_code) xfer_code = ftp_wait_reply(150, 1);
+    return xfer_code;
 }
 
-static void esx_fclose(uint8_t handle)
+// Report an aborted transfer. The server text is shown before the data
+// connection is closed: closing pumps the transport, which reuses rx_line.
+static void ftp_transfer_abort(int16_t why)
 {
-    (void)handle;
-    __asm
-        ld hl, 2
-        add hl, sp
-        ld a, (hl)
-        rst 0x08
-        defb 0x9C           ; ESX_FSYNC first
-        ld hl, 2
-        add hl, sp
-        ld a, (hl)
-        rst 0x08
-        defb 0x9B           ; ESX_FCLOSE
-    __endasm;
+    uint8_t lost = (why == XFER_ERR) && (xfer_code == FTP_LOST || xfer_code == 421);
+
+    if (why == XFER_ERR && !lost) print_reply(S_ERROR_TAG, reply_text);
+    net_data_close();
+    if (why == XFER_CANCEL) {
+        g_user_cancel = 1;
+        fail(S_CANCEL);
+    } else if (why == XFER_TIMEOUT) {
+        fail("Timeout (no data)");
+    } else if (lost) {
+        connection_lost();
+    }
 }
 
+// Outcome of the final reply after EOF: 0 ok, 1 failed (already reported)
+static uint8_t ftp_transfer_failed(uint16_t code) __z88dk_fastcall
+{
+    if (code == FTP_LOST || code == 421) { connection_lost(); return 1; }
+    if (code >= 400) { print_reply(S_ERROR_TAG, reply_text); return 1; }
+    return 0;
+}
 
 // ============================================================================
 // COMMAND HANDLERS
@@ -237,39 +286,24 @@ static void cmd_cd(const char *path) __z88dk_fastcall;
 static void cmd_user(const char *user, const char *pass);
 static void interactive_login(void);
 
-// ============================================================================
-// ENSURE LOGGED IN
-// ============================================================================
-
 static uint8_t ensure_logged_in(void)
 {
     if (connection_state >= STATE_FTP_CONNECTED) {
-        uart_drain_to_buffer();
-        while (try_read_line()) {
-            if (check_disconnect_message()) {
-                clear_ftp_state();
-                draw_status_bar();
-                fail("Connection lost");
-                return 0;
-            }
-            rx_pos = 0;
+        char *p;
+        while ((p = net_ctrl_line()) != NULL) {
+            if (reply_code(p) == 421) { connection_lost(); return 0; }
         }
+        if (net_ctrl_lost()) { connection_lost(); return 0; }
     }
 
     if (connection_state == STATE_LOGGED_IN) return 1;
 
-    if (connection_state == STATE_DISCONNECTED || connection_state == STATE_WIFI_OK) {
-        fail(S_NO_CONN);
-    } else if (connection_state == STATE_FTP_CONNECTED) {
-        fail("Not logged in");
-    }
-
+    if (connection_state == STATE_FTP_CONNECTED) fail("Not logged in");
+    else fail(S_NO_CONN);
     return 0;
 }
 
-// ============================================================================
-// HELPER: Parse host[:port][/path] format
-// ============================================================================
+// Parse host[:port][/path]
 static uint16_t parse_host_port_path(char *input, char **out_host, char **out_path)
 {
     uint16_t port = 21;
@@ -287,7 +321,7 @@ static uint16_t parse_host_port_path(char *input, char **out_host, char **out_pa
         *colon = 0;
         char *p_port = colon + 1;
         uint32_t p_val = 0;
-        while (*p_port >= '0' && *p_port <= '9') {
+        while (*p_port >= '0' && *p_port <= '9' && p_val <= 65535UL) {
             p_val = p_val * 10 + (*p_port - '0');
             p_port++;
         }
@@ -301,6 +335,8 @@ static uint16_t parse_host_port_path(char *input, char **out_host, char **out_pa
 
 static void cmd_open(const char *host, uint16_t port)
 {
+    uint16_t code;
+
     if (connection_state == STATE_DISCONNECTED) {
         fail(S_NO_WIFI);
         return;
@@ -309,7 +345,6 @@ static void cmd_open(const char *host, uint16_t port)
     if (!confirm_disconnect()) return;
 
     safe_copy(ftp_path, S_EMPTY, sizeof(ftp_path));
-
     invalidate_status_bar();
     draw_status_bar();
 
@@ -324,13 +359,8 @@ static void cmd_open(const char *host, uint16_t port)
     }
     main_print(tx_buffer);
 
-
-
-    if (!esp_tcp_connect(0, host, port)) {
-    
-        esp_tcp_close(0);
-        wait_frames(2);
-        rb_flush();
+    if (!net_ctrl_open(host, port)) {
+        net_ctrl_close();
         fail("Connect failed");
         return;
     }
@@ -338,50 +368,25 @@ static void cmd_open(const char *host, uint16_t port)
     current_attr = ATTR_LOCAL;
     main_print("Waiting for banner.");
     drain_mode_fast();
-    wait_drain(5);
-    rx_pos = 0;
+    ml_code = 0;
+    code = ftp_wait_reply(350, 0);
+    drain_mode_normal();
 
-    uint16_t frames;
-    for (frames = 0; frames < 350; frames++) {
-        HALT();
-        if (key_break_down()) {
-        
-            esp_tcp_close(0);
-            fail(S_CANCEL);
-            return;
-        }
-        uart_drain_to_buffer();
-
-        if (try_read_line()) {
-            if (strstr(rx_line, "220")) {
-            
-                safe_copy(ftp_host, host, sizeof(ftp_host));
-                safe_copy(ftp_user, S_EMPTY, sizeof(ftp_user));
-
-                connection_state = STATE_FTP_CONNECTED;
-                current_attr = ATTR_RESPONSE;
-                if (main_col > 0) main_newline();
-                main_print("Connected!");
-                draw_status_bar();
-                return;
-            }
-
-            if (strstr(rx_line, S_CLOSED) || strstr(rx_line, S_ERROR) || strstr(rx_line, "421")) {
-            
-                esp_tcp_close(0);
-                rx_reset_all();
-                main_newline();
-                fail("Connection rejected");
-                return;
-            }
-            rx_pos = 0;
-        }
+    if (code == 220) {
+        safe_copy(ftp_host, host, sizeof(ftp_host));
+        safe_copy(ftp_user, S_EMPTY, sizeof(ftp_user));
+        connection_state = STATE_FTP_CONNECTED;
+        current_attr = ATTR_RESPONSE;
+        main_print("Connected!");
+        draw_status_bar();
+        return;
     }
 
-
-    fail("FTP banner timeout");
-    esp_tcp_close(0);
-    rx_reset_all();
+    net_ctrl_close();
+    if (code == FTP_CANCEL) fail(S_CANCEL);
+    else if (code == 0) fail("FTP banner timeout");
+    else if (code == FTP_LOST) fail("Connection rejected");
+    else print_reply("Rejected: ", reply_text);
 }
 
 // Interactive login prompt (called after OPEN, not from !CONNECT)
@@ -412,181 +417,74 @@ static void interactive_login(void)
     cmd_user(user_buf, pass_buf);
 }
 
-// Wait for FTP response code
-static uint16_t user_wait_ftp_response(void)
+// PWD -> ftp_path. Returns 1 on success.
+static uint8_t pwd_core(uint8_t silent) __z88dk_fastcall
 {
-    uint16_t frames = 0;
-    uint16_t code = 0;
-    char *p;
+    char *start, *end;
+    uint16_t code;
 
-    rx_pos = 0;
+    if (!ensure_logged_in()) return 0;
 
-    while (frames < 200) {
-        HALT();
-
-        if (key_break_down()) {
-            fail(S_CANCEL);
-            return 0;
-        }
-
-        uart_drain_to_buffer();
-
-        if (try_read_line()) {
-            if (strncmp(rx_line, S_IPD0, 7) == 0) {
-                p = strchr(rx_line, ':');
-                if (p) {
-                    p++;
-                    code = 0;
-                    if (*p >= '1' && *p <= '5') {
-                        uint8_t d = *p++ - '0';
-                        code = ((uint16_t)d << 6) + ((uint16_t)d << 5) + ((uint16_t)d << 2);
-                        if (*p >= '0' && *p <= '9') {
-                            d = *p++ - '0';
-                            code += ((uint16_t)d << 3) + ((uint16_t)d << 1);
-                        }
-                        if (*p >= '0' && *p <= '9') code += (*p++ - '0');
-                    }
-                    if (code > 0) return code;
-                }
-            }
-            rx_pos = 0;
-        }
-        frames++;
+    code = ftp_cmd_reply("PWD", 200);
+    if (code != 257) {
+        if (!silent) report_reply(code, "PWD");
+        return 0;
     }
 
-    return 0;
-}
-
-// Fast FTP code wait
-static uint8_t wait_for_ftp_code_fast(uint16_t max_frames, const char *code3)
-{
-    uint16_t frames = 0;
-    char *p;
-
-    rx_pos = 0;
-
-    while (frames < max_frames) {
-        HALT();
-
-        if (key_break_down()) {
-            return 0;
-        }
-
-        uart_drain_to_buffer();
-
-        while (try_read_line()) {
-            if (strncmp(rx_line, S_IPD0, 7) == 0) {
-                p = strchr(rx_line, ':');
-                if (p) {
-                    p++;
-                    if (p[0] == code3[0] && p[1] == code3[1] && p[2] == code3[2]) {
-                        if (p[3] == '-') {
-                            continue;
-                        }
-                        return 1;
-                    }
-                }
+    // 257 "<path>" ... ("" inside the name is an escaped quote)
+    start = strchr(reply_text, '"');
+    if (start) {
+        char *w;
+        start++;
+        end = w = start;
+        while (*end) {
+            if (*end == '"') {
+                if (end[1] != '"') break;
+                end++;
             }
-            rx_pos = 0;
+            *w++ = *end++;
         }
-        frames++;
+        *w = 0;
+    } else {
+        start = reply_text + 4;
+        end = start + strlen(start);
+        while (end > start && (end[-1] == ' ' || end[-1] == '\r')) *--end = 0;
     }
 
-    return 0;
-}
+    utf8_to_ascii(start);               // server bytes never reach the BPE expander
+    safe_copy(ftp_path, start, sizeof(ftp_path));
 
-// Core function for PWD
-static void pwd_core(uint8_t silent)
-{
-    if (!ensure_logged_in()) return;
-    uint16_t frames = 0;
-    char *p;
+    if (!silent) {
+        uint8_t path_len = strlen(ftp_path);
+        char *q = tx_buffer;
 
-    if (!ftp_command("PWD")) return;
-
-    rx_pos = 0;
-
-    while (frames < 200) {
-        HALT();
-
-        if (key_break_down()) {
-            if (!silent) {
-                fail(S_CANCEL);
-            }
-            return;
+        current_attr = ATTR_RESPONSE;
+        q = str_append(q, "PWD: ");
+        if (path_len > SCREEN_COLS - 5) {
+            q = char_append(q, '~');
+            q = str_append(q, ftp_path + path_len - (SCREEN_COLS - 6));
+        } else {
+            q = str_append(q, ftp_path);
         }
-
-        uart_drain_to_buffer();
-
-        while (try_read_line_nodrain()) {
-            if (strncmp(rx_line, S_IPD0, 7) == 0) {
-                p = strchr(rx_line, ':');
-                if (p && p[1] == '2' && p[2] == '5' && p[3] == '7') {
-                    // Found 257 response - extract path
-                    char *start = strchr(p, '"');
-                    if (start) {
-                        start++;
-                        char *end = strchr(start, '"');
-                        if (end) *end = 0;
-                    } else {
-                        // No quotes: skip "257 " and trim trailing whitespace
-                        start = p + 5;
-                        char *end = start + strlen(start) - 1;
-                        while (end > start && (*end == ' ' || *end == '\r'))
-                            *end-- = 0;
-                    }
-
-                    safe_copy(ftp_path, start, sizeof(ftp_path));
-
-                    if (!silent) {
-                        uint8_t old_attr = current_attr;
-                        uint8_t path_len = strlen(ftp_path);
-                        char *q = tx_buffer;
-
-                        current_attr = ATTR_RESPONSE;
-                        q = str_append(q, "PWD: ");
-                        if (path_len > SCREEN_COLS - 5) {
-                            q = char_append(q, '~');
-                            q = str_append(q, ftp_path + path_len - (SCREEN_COLS - 6));
-                        } else {
-                            q = str_append(q, ftp_path);
-                        }
-                        main_print(tx_buffer);
-                        current_attr = old_attr;
-                    }
-
-                    draw_status_bar_real();
-                    return;
-                }
-            }
-            rx_pos = 0;
-        }
-        frames++;
+        main_print(tx_buffer);
     }
+
+    draw_status_bar_real();
+    return 1;
 }
 
 static void cmd_user(const char *user, const char *pass)
 {
+    uint16_t code;
+
     if (connection_state < STATE_FTP_CONNECTED) {
         fail(S_NO_CONN);
         return;
     }
-
     if (connection_state == STATE_LOGGED_IN) {
         fail("Already logged in");
         return;
     }
-
-    {
-        uint8_t silence_checks = 0;
-        while(silence_checks < 2) {
-            if (ay_uart_ready()) { ay_uart_read(); silence_checks = 0; }
-            else { wait_frames(1); silence_checks++; }
-        }
-        rb_flush();
-    }
-
-    uint16_t code = 0;
 
     current_attr = ATTR_LOCAL;
     {
@@ -602,22 +500,12 @@ static void cmd_user(const char *user, const char *pass)
         p = str_append(p, "USER ");
         p = str_append(p, user);
     }
-    if (!ftp_command(tx_buffer)) {
-        fail("Send USER failed");
-        return;
-    }
-
-    code = user_wait_ftp_response();
+    code = ftp_cmd_reply(tx_buffer, 250);
     if (code == 230) goto login_success;
 
     if (code != 331) {
         if (code == 530) fail(S_LOGIN_BAD);
-        else if (code > 0) {
-            char *p = tx_buffer;
-            p = str_append(p, "USER error: ");
-            p = u16_to_dec(p, code);
-            fail(tx_buffer);
-        } else fail("No response to USER");
+        else report_reply(code, "USER");
         return;
     }
 
@@ -626,45 +514,28 @@ static void cmd_user(const char *user, const char *pass)
         p = str_append(p, "PASS ");
         p = str_append(p, pass);
     }
-    if (!ftp_command(tx_buffer)) {
-        fail("Send PASS failed");
-        return;
-    }
-
-    code = user_wait_ftp_response();
-    if (code != 230) {
+    code = ftp_cmd_reply(tx_buffer, 500);
+    if (code != 230 && code != 202) {
         if (code == 530) fail(S_LOGIN_BAD);
-        else {
-            char *p = tx_buffer;
-            p = str_append(p, "Login failed: ");
-            p = u16_to_dec(p, code);
-            fail(tx_buffer);
-        }
+        else report_reply(code, "PASS");
         return;
     }
 
 login_success:
     safe_copy(ftp_user, user, sizeof(ftp_user));
     connection_state = STATE_LOGGED_IN;
-
     safe_copy(ftp_path, S_EMPTY, sizeof(ftp_path));
-
     draw_status_bar_real();
 
     current_attr = ATTR_LOCAL;
     main_print("Logged in!");
 
-    safe_copy(ftp_cmd_buffer, "TYPE I\r\n", sizeof(ftp_cmd_buffer));
-    esp_tcp_send(0, ftp_cmd_buffer, strlen(ftp_cmd_buffer));
-
-    wait_for_ftp_code_fast(50, "200");
+    ftp_cmd_reply("TYPE I", 100);
 
     main_puts("Getting PWD: ");
-    pwd_core(1);
-
-    if (ftp_path[0] && strcmp(ftp_path, S_EMPTY) != 0) {
-        current_attr = ATTR_RESPONSE;
+    if (pwd_core(1)) {
         uint8_t path_len = strlen(ftp_path);
+        current_attr = ATTR_RESPONSE;
         if (path_len > 51) {
             main_puts2("~", ftp_path + path_len - 50);
         } else {
@@ -729,10 +600,11 @@ static uint8_t decode_path_escapes(const char *in, char *out, uint8_t out_sz)
 
 static void cmd_cd(const char *path) __z88dk_fastcall
 {
-    if (!ensure_logged_in()) return;
-    uint16_t frames = 0;
-
     char path_dec[PATH_SIZE];
+    uint16_t code;
+
+    if (!ensure_logged_in()) return;
+
     decode_path_escapes(path, path_dec, sizeof(path_dec));
 
     {
@@ -740,65 +612,36 @@ static void cmd_cd(const char *path) __z88dk_fastcall
         p = str_append(p, "CWD ");
         p = str_append(p, path_dec);
     }
-    if (!ftp_command(tx_buffer)) return;
-
-    rx_pos = 0;
-
-    while (frames < 250) {
-        HALT();
-
-        if (key_break_down()) {
-            fail(S_CANCEL);
-            return;
-        }
-
-        if (try_read_line()) {
-            if (strncmp(rx_line, S_IPD0, 7) == 0) {
-                if (strstr(rx_line, "250")) {
-                    current_attr = ATTR_RESPONSE;
-
-                    if (ftp_path[0] == '-' || strcmp(ftp_path, S_EMPTY) == 0) {
-                        safe_copy(ftp_path, S_SLASH, sizeof(ftp_path));
-                    }
-
-                    if (path_dec[0] == '/') {
-                        safe_copy(ftp_path, path_dec, sizeof(ftp_path));
-                        } else if (strcmp(path_dec, "..") == 0) {
-                        char *last_slash = strrchr(ftp_path, '/');
-                        if (last_slash && last_slash != ftp_path) {
-                            *last_slash = '\0';
-                        } else {
-                            safe_copy(ftp_path, S_SLASH, sizeof(ftp_path));
-                        }
-                        } else {
-                        uint8_t len = (uint8_t)strlen(ftp_path);
-                        if (len > 0 && ftp_path[len-1] != '/' && len < sizeof(ftp_path) - 2) {
-                            ftp_path[len++] = '/';
-                            ftp_path[len] = '\0';
-                        }
-                        st_copy_n(ftp_path + len, path_dec, sizeof(ftp_path) - len);
-                    }
-
-                    invalidate_status_bar();
-                    draw_status_bar();
-                    // Drain any leftover CWD response data before PWD
-                    { uint8_t d; for (d = 0; d < 15; d++) { uart_drain_to_buffer(); HALT(); } }
-                    rb_flush();
-                    rx_pos = 0;
-                    cmd_pwd();
-                    return;
-                }
-                if (strstr(rx_line, S_550) || strstr(rx_line, S_553) ||
-                    strstr(rx_line, "501") || strstr(rx_line, "500")) {
-                    fail("Directory not found");
-                    return;
-                }
-            }
-            rx_pos = 0;
-        }
-        frames++;
+    code = ftp_cmd_reply(tx_buffer, 250);
+    if (code != 250) {
+        if (code >= 500 && code < 600) fail("Directory not found");
+        else report_reply(code, "CD");
+        return;
     }
-    fail("CD timeout");
+
+    // Provisional path; PWD below replaces it with the server's answer
+    if (ftp_path[0] == '-') {
+        safe_copy(ftp_path, S_SLASH, sizeof(ftp_path));
+    }
+    if (path_dec[0] == '/') {
+        safe_copy(ftp_path, path_dec, sizeof(ftp_path));
+    } else if (strcmp(path_dec, "..") == 0) {
+        char *last_slash = strrchr(ftp_path, '/');
+        if (last_slash && last_slash != ftp_path) *last_slash = '\0';
+        else safe_copy(ftp_path, S_SLASH, sizeof(ftp_path));
+    } else {
+        uint8_t len = (uint8_t)strlen(ftp_path);
+        if (len > 0 && ftp_path[len - 1] != '/' && len < sizeof(ftp_path) - 2) {
+            ftp_path[len++] = '/';
+            ftp_path[len] = '\0';
+        }
+        st_copy_n(ftp_path + len, path_dec, sizeof(ftp_path) - len);
+    }
+    utf8_to_ascii(ftp_path);
+
+    invalidate_status_bar();
+    draw_status_bar();
+    cmd_pwd();
 }
 
 // ============================================================================
@@ -829,37 +672,31 @@ static uint8_t str_contains(const char *haystack, const char *needle)
     return 0;
 }
 
+// Dotted IPv4 literal in a private/unroutable range?
+static uint8_t is_dotted_unroutable(const char *s) __z88dk_fastcall
+{
+    uint8_t o[4];
+    uint8_t i;
+    char *p = (char *)s;
+    uint16_t v;
+
+    for (i = 0; i < 4; i++) {
+        if (*p < '0' || *p > '9') return 0;
+        v = parse_decimal(&p);
+        if (v > 255) return 0;
+        o[i] = (uint8_t)v;
+        if (i < 3) {
+            if (*p != '.') return 0;
+            p++;
+        }
+    }
+    if (*p) return 0;
+    return is_unroutable(o);
+}
+
 // ============================================================================
 // FILE SYSTEM HELPERS (8.3 COMPLIANCE & COLLISION)
 // ============================================================================
-
-static uint8_t esx_fopen_read(const char *filename)
-{
-    (void)filename;
-    __asm
-        ld hl, 2
-        add hl, sp
-        ld hl, (hl)
-        push hl
-        xor a
-        rst 0x08
-        defb 0x89           ; ESX_GETSETDRV
-        jr c, esx_openr_fail2
-        pop ix
-        ld b, 0x01          ; FMODE_READ
-        rst 0x08
-        defb 0x9A           ; ESX_FOPEN
-        jr c, esx_openr_fail
-        ld l, a
-        jr esx_openr_done
-    esx_openr_fail2:
-        pop hl              ; Clean stacked filename
-    esx_openr_fail:
-        ld l, 255
-    esx_openr_done:
-        ld h, 0
-    __endasm;
-}
 
 static void sanitize_filename_83(const char *src, char *dst)
 {
@@ -882,10 +719,10 @@ static void sanitize_filename_83(const char *src, char *dst)
         char c = *p++;
         if (c >= 'a' && c <= 'z') c -= 32;
         if (c == ' ' || c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' || c == '.') c = '_';
-        if (c < 32) c = '_';
-
+        if (c < 32 || (uint8_t)c >= 127) c = '_';
         base[base_len++] = c;
     }
+    if (base_len == 0) base[base_len++] = '_';
 
     if (p_ext) {
         ext[ext_len++] = '.';
@@ -894,9 +731,10 @@ static void sanitize_filename_83(const char *src, char *dst)
             char c = *p++;
             if (c >= 'a' && c <= 'z') c -= 32;
             if (c == ' ' || c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' || c == '.') c = '_';
-            if (c < 32) c = '_';
+            if (c < 32 || (uint8_t)c >= 127) c = '_';
             ext[ext_len++] = c;
         }
+        if (ext_len == 1) ext_len = 0;      // "name." -> "NAME"
     }
 
     memcpy(dst, base, base_len);
@@ -906,7 +744,6 @@ static void sanitize_filename_83(const char *src, char *dst)
 
 static uint8_t ensure_unique_filename(char *dst) __z88dk_fastcall
 {
-    uint8_t h;
     char base[9];
     char ext[5];
     char *p;
@@ -914,21 +751,17 @@ static uint8_t ensure_unique_filename(char *dst) __z88dk_fastcall
     uint8_t ext_len = 0;
     uint8_t i;
 
-    h = esx_fopen_read(dst);
-    if (h == 0xFF) return 1;
-    esx_fclose(h);
+    if (!fs_exists(dst)) return 1;
 
     p = dst;
     while (*p && *p != '.' && base_len < 8) {
         base[base_len++] = *p++;
     }
-
     if (*p == '.') {
         while (*p && ext_len < sizeof(ext) - 1) {
             ext[ext_len++] = *p++;
         }
     }
-
     if (base_len > 6) base_len = 6;
 
     for (i = 1; i <= 9; i++) {
@@ -937,10 +770,7 @@ static uint8_t ensure_unique_filename(char *dst) __z88dk_fastcall
         dst[base_len + 1] = '0' + i;
         memcpy(dst + base_len + 2, ext, ext_len);
         dst[base_len + 2 + ext_len] = 0;
-
-        h = esx_fopen_read(dst);
-        if (h == 0xFF) return 1;
-        esx_fclose(h);
+        if (!fs_exists(dst)) return 1;
     }
     return 0;
 }
@@ -949,127 +779,36 @@ static uint8_t ensure_unique_filename(char *dst) __z88dk_fastcall
 // DOWNLOAD
 // ============================================================================
 
+// SIZE -> bytes, 0 if unknown
 static uint32_t download_request_size(const char *remote)
 {
     uint32_t file_size = 0;
-    uint16_t frames = 0;
-
+    char *ps;
     char *p = tx_buffer;
+
     p = str_append(p, "SIZE ");
     p = str_append(p, remote);
 
-    if (!ftp_command(tx_buffer)) {
-        return 0;
+    if (ftp_cmd_reply(tx_buffer, 100) != 213) return 0;
+
+    ps = reply_text + 4;
+    while (*ps >= '0' && *ps <= '9') {
+        file_size = file_size * 10 + (*ps - '0');
+        ps++;
     }
-
-    rx_pos = 0;
-
-    while (frames < 100) {
-        HALT();
-        uart_drain_to_buffer();
-
-        if (try_read_line()) {
-            if (strncmp(rx_line, S_IPD0, 7) == 0) {
-                char *ps = strstr(rx_line, "213 ");
-                if (ps) {
-                    ps += 4;
-                    while (*ps >= '0' && *ps <= '9') {
-                        file_size = file_size * 10 + (*ps - '0');
-                        ps++;
-                    }
-                    break;
-                }
-                if (strstr(rx_line, S_550) || strstr(rx_line, S_ERROR)) break;
-            }
-            rx_pos = 0;
-        }
-        frames++;
-    }
-
-    rx_pos = 0;
     return file_size;
-}
-
-static uint8_t download_wait_transfer_start(uint16_t *ipd_remaining, uint8_t *in_data, uint8_t *user_cancel)
-{
-    uint16_t frames = 0;
-    char ctrl_buf[64];
-    uint8_t ctrl_pos = 0;
-    int16_t c;
-
-    *in_data = 0;
-    *ipd_remaining = 0;
-
-    while (frames < 400) {
-        uart_drain_to_buffer();
-        c = rb_pop();
-
-        if (c == -1) {
-            HALT();
-            if (key_break_down()) {
-                *user_cancel = 1;
-                return 0;
-            }
-            frames++;
-            continue;
-        }
-
-        if (c == '\r') continue;
-
-        if (c == '\n') {
-            ctrl_buf[ctrl_pos] = 0;
-
-            if (strncmp(ctrl_buf, S_IPD0, 7) == 0) {
-                if (strstr(ctrl_buf, S_550) || strstr(ctrl_buf, S_553) ||
-                    strstr(ctrl_buf, S_ERROR) || strstr(ctrl_buf, "Fail")) {
-
-                
-                    current_attr = ATTR_ERROR;
-                    main_puts(S_ERROR_TAG);
-                    main_print("File not found");
-                    return 0;
-                }
-
-                if (strstr(ctrl_buf, "150") || strstr(ctrl_buf, "125")) {
-                    return 1;
-                }
-            }
-            ctrl_pos = 0;
-            continue;
-        }
-
-        if (c == ':' && ctrl_pos >= 7 && strncmp(ctrl_buf, S_IPD1, 7) == 0) {
-            ctrl_buf[ctrl_pos] = 0;
-            char *p = ctrl_buf + 7;
-            *ipd_remaining = parse_decimal(&p);
-            *in_data = 1;
-            return 1;
-        }
-
-        if (ctrl_pos < sizeof(ctrl_buf) - 1) {
-            ctrl_buf[ctrl_pos++] = (char)c;
-        }
-    }
-
-    return 0;
 }
 
 static uint8_t download_file_core(const char *remote, const char *local, uint8_t b_cur, uint8_t b_tot, uint32_t *out_bytes)
 {
     uint32_t received = 0;
-    uint32_t file_size = 0;
-    uint16_t silence = 0;
-    uint8_t handle = 0xFF;
-    uint8_t in_data = 0;
-    uint16_t ipd_remaining = 0;
+    uint32_t file_size;
     uint32_t last_progress = 0;
-    char hdr_buf[64];
-    uint8_t hdr_pos = 0;
-    char local_name[32];
-    uint8_t user_cancel = 0;
-    uint8_t download_success = 0;
-    uint8_t write_error = 0;
-    int16_t c;
+    uint8_t handle = FS_BAD;
+    char local_name[16];
+    int16_t n = 0;
+    uint16_t code;
+    const char *err = NULL;
 
     *out_bytes = 0;
     file_buf_pos = 0;
@@ -1079,7 +818,6 @@ static uint8_t download_file_core(const char *remote, const char *local, uint8_t
         return 0;
     }
     drain_mode_normal();
-    rx_reset_all();
     progress_current_file[0] = '\0';
 
     current_attr = ATTR_LOCAL;
@@ -1101,192 +839,99 @@ static uint8_t download_file_core(const char *remote, const char *local, uint8_t
 
     file_size = download_request_size(remote);
 
-    if (ftp_passive() == 0) { fail(S_PASV_FAIL); return 0; }
-    if (!ftp_open_data()) { fail(S_DATA_FAIL); return 0; }
-
     {
-        char *p = ftp_cmd_buffer;
+        char *p = tx_buffer;
         p = str_append(p, "RETR ");
         p = str_append(p, remote);
     }
-    if (!ftp_command(ftp_cmd_buffer)) goto get_cleanup;
-
-
-
-    if (!download_wait_transfer_start(&ipd_remaining, &in_data, &user_cancel)) {
-        if (user_cancel) {
-            goto get_cleanup;
-        }
-        esp_tcp_close(1);
-        rb_flush();
-        return 0;
-    }
-
-    handle = esx_fopen_write(local_name);
-    if (handle == 0xFF) {
-        fail("Cannot create local file");
-        ftp_close_data();
-        return 0;
-    }
+    if (!ftp_transfer_begin(tx_buffer)) return 0;
 
     draw_progress_bar(local_name, 0, file_size);
-
     drain_mode_fast();
 
     // ========================================================================
-    // DOWNLOAD LOOP
+    // DOWNLOAD LOOP: the local file is created on the first data byte (or at
+    // EOF for an empty file), so a refused RETR never leaves a file behind.
     // ========================================================================
     while (1) {
+        n = ftp_xfer_read(file_buffer + file_buf_pos, sizeof(file_buffer) - file_buf_pos);
+        if (n == 0) continue;
+        if (n < 0) break;
 
-        uart_drain_to_buffer();
-
-        if (in_data && ipd_remaining > 0) {
-            while (rb_head != rb_tail && ipd_remaining > 0) {
-                file_buffer[file_buf_pos++] = ring_buffer[rb_tail];
-                rb_tail = (rb_tail + 1) & RING_BUFFER_MASK;
-                ipd_remaining--;
-
-                if (file_buf_pos >= 512) {
-                    if (esx_fwrite(handle, file_buffer, file_buf_pos) != file_buf_pos) {
-                        write_error = 1; break;
-                    }
-                    received += file_buf_pos;
-                    file_buf_pos = 0;
-
-                    if (received - last_progress >= 4096) {
-                        draw_progress_bar(local_name, received, file_size);
-                        last_progress = received;
-                        if (key_break_down()) { user_cancel = 1; break; }
-                    }
-
-                    uart_drain_to_buffer();
-                }
-            }
-
-            if (user_cancel || write_error) break;
-
-            if (ipd_remaining == 0 && file_buf_pos > 0) {
-                if (esx_fwrite(handle, file_buffer, file_buf_pos) != file_buf_pos) {
-                    write_error = 1; break;
-                }
-                received += file_buf_pos;
-                file_buf_pos = 0;
-            }
-
-            if (ipd_remaining == 0) { in_data = 0; hdr_pos = 0; }
-            silence = 0;
-            continue;
+        if (handle == FS_BAD) {
+            handle = fs_create(local_name);
+            if (handle == FS_BAD) { err = "Cannot create local file"; break; }
         }
-
-        c = rb_pop();
-
-        if (c == -1) {
-            HALT();
-            uart_drain_to_buffer();
-            c = rb_pop();
-
-            if (c == -1) {
-                silence++;
-                if (silence > SILENCE_XLONG) {
-                    main_print("Timeout (No data)");
-                    break;
-                }
-                if ((silence & 0xFF) == 0 && key_break_down()) {
-                    user_cancel = 1;
-                    break;
-                }
-                continue;
+        file_buf_pos += (uint16_t)n;
+        if (file_buf_pos == sizeof(file_buffer)) {
+            if (fs_write(handle, file_buffer, file_buf_pos) != file_buf_pos) {
+                err = "Write error"; break;
             }
-        }
-
-        silence = 0;
-
-        if (c == '\r' || c == '\n') {
-            hdr_buf[hdr_pos] = 0;
-
-            if (strstr(hdr_buf, S_CLOSED1)) { download_success = 1; goto get_cleanup; }
-
-            if (strncmp(hdr_buf, S_0CLOSED, 8) == 0) { goto get_cleanup; }
-
-            if (hdr_pos > 7 && strncmp(hdr_buf, S_IPD1, 7) == 0) {
-                char *p = hdr_buf + 7;
-                ipd_remaining = parse_decimal(&p);
-                if (*p == ':') { in_data = 1; file_buf_pos = 0; }
-            }
-            hdr_pos = 0;
-        } else if (c == ':' && hdr_pos > 7 && strncmp(hdr_buf, S_IPD1, 7) == 0) {
-            hdr_buf[hdr_pos] = 0;
-            char *p = hdr_buf + 7;
-            ipd_remaining = parse_decimal(&p);
-            in_data = 1; file_buf_pos = 0; hdr_pos = 0;
-        } else if (hdr_pos < 63) {
-            hdr_buf[hdr_pos++] = (char)c;
-        }
-    }
-
-get_cleanup:
-    drain_mode_normal();
-    if (!user_cancel && !write_error && file_buf_pos > 0) {
-        if (esx_fwrite(handle, file_buffer, file_buf_pos) != file_buf_pos) {
-            write_error = 1;
-        } else {
             received += file_buf_pos;
+            file_buf_pos = 0;
+
+            if (received - last_progress >= 4096) {
+                draw_progress_bar(local_name, received, file_size);
+                last_progress = received;
+                if (key_break_down()) { n = XFER_CANCEL; break; }
+            }
         }
     }
+    drain_mode_normal();
 
-    if (handle != 0xFF) {
-        esx_fclose(handle);
-        if (!download_success) {
-            esxdos_f_unlink(local_name);
+    if (n == NET_EOF && !err) {
+        if (handle == FS_BAD) handle = fs_create(local_name);
+        if (handle == FS_BAD) err = "Cannot create local file";
+        else if (file_buf_pos) {
+            if (fs_write(handle, file_buffer, file_buf_pos) != file_buf_pos) err = "Write error";
+            else received += file_buf_pos;
         }
+        code = ftp_transfer_end();
+        if (!err) {
+            if (ftp_transfer_failed(code)) err = "";
+            else if (file_size && received != file_size) err = S_SIZE_FAIL;
+        }
+    } else if (!err) {
+        ftp_transfer_abort(n);
+        err = "";
+    } else {
+        net_data_close();
     }
-    ftp_close_data();
 
-    if (write_error) {
-        fail("SD write error");
+    if (handle != FS_BAD) {
+        fs_close(handle);
+        if (!err && !fs_commit(local_name)) err = "Commit failed";
+        if (err) fs_remove(local_name);
+    }
+
+    if (err) {
+        if (err[0]) fail(err);
         return 0;
     }
 
-    if (user_cancel) {
-        g_user_cancel = 1;
-        uart_flush_rx();
-        if (b_tot <= 1) {
-            fail(S_CANCEL);
-        }
-        return 0;
-    } else if (download_success) {
-        draw_progress_bar(local_name, received, file_size > 0 ? file_size : received);
-
-        current_attr = ATTR_RESPONSE;
+    draw_progress_bar(local_name, received, file_size ? file_size : received);
+    current_attr = ATTR_RESPONSE;
+    {
         char size_buf[12];
+        char *p = tx_buffer;
         format_size(received, size_buf);
-        {
-            char *p = tx_buffer;
-            p = str_append(p, "OK: ");
-            p = str_append(p, local_name);
-            p = str_append(p, " (");
-            p = str_append(p, size_buf);
-            p = char_append(p, ')');
-        }
-        main_print(tx_buffer);
-
-        *out_bytes = received;
-        return 1;
+        p = str_append(p, "OK: ");
+        p = str_append(p, local_name);
+        p = str_append(p, " (");
+        p = str_append(p, size_buf);
+        p = char_append(p, ')');
     }
-    return 0;
+    main_print(tx_buffer);
+
+    *out_bytes = received;
+    return 1;
 }
-
-// ============================================================================
-// UTF-8 TO ASCII
-// ============================================================================
-
-// utf8_to_ascii_inplace replaced by ASM utf8_to_ascii (fastcall, in-place)
 
 // ============================================================================
 // LIST PARSING
 // ============================================================================
 
-static uint8_t list_parse_line(const char *line_buf, uint8_t line_pos,
+static uint8_t list_parse_line(const char *line_buf,
                                 uint8_t type_mode, uint32_t min_size, const char *pattern,
                                 char *type_out, uint8_t *is_dir, uint32_t *size, char *name_out)
 {
@@ -1348,35 +993,106 @@ static uint8_t list_parse_line(const char *line_buf, uint8_t line_pos,
 // ============================================================================
 // UNIFIED LIST/SEARCH COMMAND
 // ============================================================================
+// Data is read in chunks into file_buffer[0..255]; the line under assembly
+// lives in file_buffer[256..383] (file_buffer is idle during LIST), which
+// keeps 128 bytes off the stack.
+
+#define LIST_CHUNK  256
+#define LIST_LINE   (file_buffer + LIST_CHUNK)
+#define LIST_LINE_MAX 127
+
+static uint8_t list_line_pos;
+static uint8_t list_page_lines;
+static uint16_t list_matches;
+static uint8_t list_header_printed;
+static uint8_t list_pause_risky;
+
+// Emit one assembled LIST line. Returns 0 if the user stopped the listing.
+static uint8_t list_emit(uint8_t type_mode, uint32_t min_size, const char *pattern)
+{
+    uint8_t is_dir;
+    uint32_t size;
+    char name[41];
+    char type;
+    char size_str[16];
+
+    LIST_LINE[list_line_pos] = 0;
+    if (list_line_pos <= 10) return 1;
+    if (!list_parse_line((const char *)LIST_LINE, type_mode, min_size, pattern,
+                         &type, &is_dir, &size, name)) return 1;
+
+    if (!list_header_printed) {
+        current_attr = ATTR_RESPONSE;
+        main_print(S_LIST_HDR);
+        print_char_line(22, '-');
+        list_header_printed = 1;
+        list_page_lines = 1;
+    }
+
+    format_size(size, size_str);
+    current_attr = is_dir ? ATTR_USER : ATTR_LOCAL;
+    {
+        char *q = tx_buffer;
+        uint8_t slen;
+        q = char_append(q, type);
+        q = char_append(q, ' ');
+        slen = strlen(size_str);
+        while (slen < 9) { q = char_append(q, ' '); slen++; }
+        q = str_append(q, size_str);
+        q = char_append(q, ' ');
+        q = str_append(q, name);
+    }
+    main_print(tx_buffer);
+    list_matches++;
+    list_page_lines++;
+
+    if (list_page_lines >= LINES_PER_PAGE) {
+        uint8_t saved_attr = current_attr;
+        uint8_t saved_line = main_line;
+        uint16_t idle_frames = 0;
+
+        current_attr = ATTR_RESPONSE;
+        main_puts("-- More? BREAK=stop --");
+        drain_mode_normal();
+        while (1) {
+            HALT();
+            net_poll();
+            if (key_break_down()) {
+                clear_line(saved_line, ATTR_MAIN_BG);
+                main_line = saved_line;
+                main_col = 0;
+                return 0;
+            }
+            if (in_inkey() != 0) break;
+            if (idle_frames < 65535) idle_frames++;
+            if (idle_frames >= FRAMES_LIST_PAUSE_RISKY) list_pause_risky = 1;
+        }
+        clear_line(saved_line, ATTR_MAIN_BG);
+        main_line = saved_line;
+        main_col = 0;
+        current_attr = saved_attr;
+        drain_mode_fast();
+        list_page_lines = 0;
+    }
+    return 1;
+}
 
 static void cmd_list_core(const char *a1, const char *a2, const char *a3)
 {
-    if (!ensure_logged_in()) return;
-    g_user_cancel = 0;
-    drain_mode_fast();
-
-    uint16_t t = 0;
-    int16_t c;
-    char line_buf[128];
-    uint8_t line_pos = 0;
-    uint16_t matches = 0;
-    uint8_t page_lines = 0;
-    uint8_t in_data = 0;
-    uint8_t cancelled = 0;
-    uint16_t ipd_remaining = 0;
-    char hdr_buf[24];
-    uint8_t hdr_pos = 0;
-    uint8_t header_printed = 0;
-    uint8_t list_pause_risky = 0;
-
-    char pattern[32]; pattern[0] = 0;
+    int16_t n;
+    uint8_t i;
+    uint8_t stopped = 0;
+    uint8_t failed = 0;
+    char pattern[32];
     uint8_t type_mode = 0;
     uint32_t min_size = 0;
-
     const char *args[3];
-    args[0] = a1; args[1] = a2; args[2] = a3;
 
-    uint8_t i;
+    if (!ensure_logged_in()) return;
+    g_user_cancel = 0;
+    pattern[0] = 0;
+
+    args[0] = a1; args[1] = a2; args[2] = a3;
     for (i = 0; i < 3; i++) {
         const char *arg = args[i];
         if (!arg || !*arg) continue;
@@ -1406,168 +1122,55 @@ static void cmd_list_core(const char *a1, const char *a2, const char *a3)
     }
     main_print(tx_buffer);
 
-    if (!setup_list_transfer()) return;
+    list_line_pos = 0;
+    list_page_lines = 0;
+    list_matches = 0;
+    list_header_printed = 0;
+    list_pause_risky = 0;
 
-    uint16_t silence_frames = 0;
-    uint8_t timed_out = 0;
+    if (!ftp_transfer_begin("LIST")) return;
+    drain_mode_fast();
 
-    while (silence_frames < SILENCE_SHORT) {
-        if ((t & 0x1FF) == 0) {
-            if (key_break_down()) {
-                cancelled = 1;
-                goto list_done;
+    while (1) {
+        n = ftp_xfer_read(file_buffer, LIST_CHUNK);
+        if (n == 0) continue;
+        if (n < 0) break;
+        {
+            uint8_t *b = file_buffer;
+            while (n--) {
+                uint8_t c = *b++;
+                if (c == '\n') {
+                    if (!list_emit(type_mode, min_size, pattern)) { stopped = 1; break; }
+                    list_line_pos = 0;
+                } else if (c >= 32 && list_line_pos < LIST_LINE_MAX) {
+                    LIST_LINE[list_line_pos++] = c;
+                }
             }
         }
-
-        uart_drain_to_buffer();
-        c = rb_pop();
-
-        if (c == -1) {
-            HALT();
-            uart_drain_to_buffer();
-            c = rb_pop();
-            if (c == -1) {
-                silence_frames++;
-                t++;
-                continue;
-            }
-        }
-        silence_frames = 0;
-        t++;
-
-        if (!in_data) {
-            if (c == '\r' || c == '\n') {
-                hdr_buf[hdr_pos] = 0;
-
-                if (strstr(hdr_buf, S_CLOSED1)) goto list_done;
-
-                if (hdr_pos > 7 && strncmp(hdr_buf, S_IPD1, 7) == 0) {
-                    char *p = hdr_buf + 7;
-                    ipd_remaining = parse_decimal(&p);
-                    if (ipd_remaining > 0) in_data = 1;
-                }
-
-                if (hdr_pos > 7 && strncmp(hdr_buf, S_IPD0, 7) == 0) {
-                    if (strstr(hdr_buf, "226")) goto list_done;
-                    if (strstr(hdr_buf, S_550)) goto list_done;
-                }
-
-                hdr_pos = 0;
-            } else if (c == ':' && hdr_pos > 7 && strncmp(hdr_buf, S_IPD1, 7) == 0) {
-                hdr_buf[hdr_pos] = 0;
-                char *p = hdr_buf + 7;
-                ipd_remaining = parse_decimal(&p);
-                in_data = 1;
-                hdr_pos = 0;
-            } else if (hdr_pos < 23) {
-                hdr_buf[hdr_pos++] = c;
-            } else {
-                hdr_pos = 0;
-            }
-        } else {
-            ipd_remaining--;
-            if (c == '\n') {
-                line_buf[line_pos] = 0;
-                if (line_pos > 10) {
-                    uint8_t is_dir;
-                    uint32_t size;
-                    char name[41];
-                    char type;
-
-                    if (list_parse_line(line_buf, line_pos, type_mode, min_size, pattern,
-                                       &type, &is_dir, &size, name)) {
-
-                        if (!header_printed) {
-                            current_attr = ATTR_RESPONSE;
-                            main_print(S_LIST_HDR);
-                            print_char_line(22, '-');
-                            header_printed = 1;
-                            page_lines = 1;
-                        }
-
-                        char size_str[16];
-                        format_size(size, size_str);
-                        current_attr = is_dir ? ATTR_USER : ATTR_LOCAL;
-
-                        {
-                            char *q = tx_buffer;
-                            uint8_t slen;
-                            q = char_append(q, type);
-                            q = char_append(q, ' ');
-                            slen = strlen(size_str);
-                            while(slen < 9) { q=char_append(q,' '); slen++; }
-                            q = str_append(q, size_str);
-                            q = char_append(q, ' ');
-                            q = str_append(q, name);
-                        }
-                        main_print(tx_buffer);
-                        matches++;
-                        page_lines++;
-
-                        if (page_lines >= LINES_PER_PAGE) {
-                            uint8_t saved_attr = current_attr;
-                            uint8_t saved_line = main_line;
-                            current_attr = ATTR_RESPONSE;
-                            main_puts("-- More? BREAK=stop --");
-                            drain_mode_normal();
-                            {
-                                uint16_t idle_frames = 0;
-                                while(1) {
-                                    HALT();
-                                    uart_drain_to_buffer();
-
-                                    if (key_break_down()) {
-                                        clear_line(saved_line, ATTR_MAIN_BG);
-                                        main_line = saved_line;
-                                        main_col = 0;
-                                        cancelled = 1;
-                                        goto list_done;
-                                    }
-                                    if (in_inkey() != 0) break;
-
-                                    if (idle_frames < 65535) idle_frames++;
-                                    if (idle_frames >= FRAMES_LIST_PAUSE_RISKY) list_pause_risky = 1;
-                                }
-                            }
-                            // Erase "More?" message and reuse its line
-                            clear_line(saved_line, ATTR_MAIN_BG);
-                            main_line = saved_line;
-                            main_col = 0;
-                            current_attr = saved_attr;
-                            drain_mode_fast();
-                            page_lines = 0;
-                        }
-                    }
-                }
-                line_pos = 0;
-            } else if (c >= 32 && c <= 255 && line_pos < 127) {
-                line_buf[line_pos++] = (char)c;
-            }
-            if (ipd_remaining == 0) in_data = 0;
-        }
+        if (stopped) break;
     }
-    timed_out = 1;
-
-list_done:
     drain_mode_normal();
-    ftp_close_data();
 
-    uint8_t had_overflow = rx_overflow;
-    rx_pos = 0;
-    rx_overflow = 0;
-
-    if (cancelled) {
+    if (stopped) {
+        net_data_close();
+        g_user_cancel = 1;
         fail(S_CANCEL);
-    } else if (timed_out) {
-        fail("LIST timeout");
+        failed = 1;
+    } else if (n == NET_EOF) {
+        if (list_line_pos) list_emit(type_mode, min_size, pattern);   // unterminated last line
+        failed = ftp_transfer_failed(ftp_transfer_end());
+    } else {
+        ftp_transfer_abort(n);
+        failed = 1;
     }
-    current_attr = (cancelled || had_overflow || timed_out) ? ATTR_ERROR : ATTR_RESPONSE;
+
+    current_attr = failed ? ATTR_ERROR : ATTR_RESPONSE;
     {
         char *p = tx_buffer;
         p = char_append(p, '(');
-        p = u16_to_dec(p, matches);
+        p = u16_to_dec(p, list_matches);
         p = str_append(p, pattern[0] ? " matches" : " items");
-        if (cancelled || had_overflow || timed_out) p = str_append(p, ", incomplete");
+        if (failed) p = str_append(p, ", incomplete");
         p = char_append(p, ')');
     }
     main_print(tx_buffer);
@@ -1583,19 +1186,26 @@ list_done:
 
 static void cmd_get(char *args) __z88dk_fastcall
 {
-    if (!esxdos_available) {
+    #define MAX_BATCH 10
+    char *argv[MAX_BATCH];
+    uint8_t argc = 0;
+    uint8_t total_success = 0;
+    uint32_t total_bytes = 0;
+    uint8_t i;
+    char *p = args;
+
+    if (!fs_available) {
+#ifdef BITSTREAM_SPECTRANEXT
+        fail("No storage");
+#else
         fail("No esxDOS");
+#endif
         return;
     }
     if (!ensure_logged_in()) return;
     g_user_cancel = 0;
     status_bar_overwritten = 0;
 
-    #define MAX_BATCH 10
-    char *argv[MAX_BATCH];
-    uint8_t argc = 0;
-
-    char *p = args;
     while (*p && argc < MAX_BATCH) {
         p = skip_ws(p);
         if (!*p) break;
@@ -1616,46 +1226,28 @@ static void cmd_get(char *args) __z88dk_fastcall
         return;
     }
 
-    uint8_t total_success = 0;
-    uint32_t total_bytes = 0;
-
-    uint8_t i;
     for (i = 0; i < argc; i++) {
         uint32_t bytes_this_file = 0;
 
         if (download_file_core(argv[i], argv[i], i + 1, argc, &bytes_this_file)) {
             total_success++;
             total_bytes += bytes_this_file;
-        } else {
-            if (g_user_cancel) {
-                if (argc > 1) {
-                    main_print(S_CANCEL);
-                }
-                break;
-            }
-        }
-
-        {
-            uint8_t w;
-            for (w = 0; w < 25; w++) {
-                uart_drain_to_buffer();
-                wait_frames(1);
-            }
+        } else if (g_user_cancel || connection_state < STATE_LOGGED_IN) {
+            break;
         }
     }
 
     current_attr = ATTR_RESPONSE;
 
-    if (argc > 1 || total_success > 0) {
+    if (argc > 1) {
         char bytes_buf[16];
         format_size(total_bytes, bytes_buf);
 
-        char *p = tx_buffer;
+        p = tx_buffer;
         p = u16_to_dec(p, total_success);
         p = str_append(p, " files downloaded (Total ");
         p = str_append(p, bytes_buf);
         p = char_append(p, ')');
-
         main_print(tx_buffer);
     }
 
@@ -1668,6 +1260,18 @@ static void cmd_get(char *args) __z88dk_fastcall
     }
 }
 
+// ============================================================================
+// QUICK CONTROL-CHANNEL PROBE
+// ============================================================================
+
+static uint8_t quick_noop_check(uint16_t max_frames) __z88dk_fastcall
+{
+    uint16_t code;
+
+    if (connection_state < STATE_FTP_CONNECTED) return 0;
+    code = ftp_cmd_reply("NOOP", max_frames);
+    return code >= 200 && code < 300;
+}
 
 // ============================================================================
 // DISCONNECT / QUIT
@@ -1675,22 +1279,11 @@ static void cmd_get(char *args) __z88dk_fastcall
 
 static void close_connection_sequence(void)
 {
-    uint16_t t;
-
     current_attr = ATTR_LOCAL;
     main_print("Closing connection.");
 
-    safe_copy(ftp_cmd_buffer, S_CMD_QUIT, sizeof(ftp_cmd_buffer));
-    esp_tcp_send(0, ftp_cmd_buffer, strlen(ftp_cmd_buffer));
-
-    for (t = 0; t < 25; t++) { uart_drain_to_buffer(); wait_frames(1); }
-
-    uart_send_string(S_AT_CLOSE0);
-
-    for (t = 0; t < 10; t++) { uart_drain_to_buffer(); wait_frames(1); }
-
-    rb_flush();
-    rx_pos = 0;
+    if (ftp_command("QUIT")) ftp_wait_reply(50, 0);
+    net_ctrl_close();
 
     clear_ftp_state();
 
@@ -1704,10 +1297,10 @@ static void cmd_quit(void)
     current_attr = ATTR_ERROR;
     main_print("Disconnect (Y/N)?");
 
-    while(1) {
-        if (ay_uart_ready()) ay_uart_read();
-
-        uint8_t k = in_inkey();
+    while (1) {
+        uint8_t k;
+        net_poll();
+        k = in_inkey();
 
         if (k == 'n' || k == 'N' || key_break_down()) {
             current_attr = ATTR_LOCAL;

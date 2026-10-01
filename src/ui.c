@@ -28,7 +28,6 @@ static void draw_status_bar(void)
 // ============================================================================
 
 static uint8_t input_cache_char[INPUT_LINES][SCREEN_COLS];
-static uint8_t input_cache_attr[INPUT_LINES][32];
 static uint8_t* attr_addr(uint8_t y, uint8_t phys_x);
 
 static void input_cache_invalidate_cell(uint8_t y, uint8_t col)
@@ -40,8 +39,7 @@ static void input_cache_invalidate_cell(uint8_t y, uint8_t col)
 // OPTIMIZED: memset is faster than nested loops (uses LDIR internally)
 static void input_cache_invalidate(void)
 {
-    memset(input_cache_char, 0xFF, sizeof(input_cache_char));  // 192 bytes
-    memset(input_cache_attr, 0xFF, sizeof(input_cache_attr));  // 96 bytes
+    memset(input_cache_char, 0xFF, sizeof(input_cache_char));
 }
 
 // line_buffer, line_len, cursor_pos are defined in globals.c
@@ -56,14 +54,11 @@ static void put_char64_input_cached(uint8_t y, uint8_t col, uint8_t c, uint8_t a
     uint8_t local_y = y - INPUT_START;
     uint8_t *vram_attr = attr_addr(y, col >> 1);
 
-    // VRAM can be modified by cursor/clear helpers without updating the cache.
-    if (input_cache_char[local_y][col] == c && *vram_attr == attr) {
-        input_cache_attr[local_y][col >> 1] = attr;
-        return;
-    }
+    // VRAM can be modified by cursor/clear helpers without updating the
+    // cache, so the real attribute byte is the second key.
+    if (input_cache_char[local_y][col] == c && *vram_attr == attr) return;
 
     input_cache_char[local_y][col] = c;
-    input_cache_attr[local_y][col >> 1] = attr;
     print_char64(y, col, c, attr);
 }
 
@@ -182,6 +177,7 @@ extern void draw_big_char(uint8_t ch) __z88dk_fastcall;
 extern uint8_t g_ps64_y;
 extern uint8_t g_ps64_col;
 extern uint8_t g_ps64_attr;
+extern uint8_t cache_row_y;
 
 // C wrapper: sets globals and calls ASM renderer
 static void print_char64(uint8_t y, uint8_t col, uint8_t c, uint8_t attr) __z88dk_callee
@@ -344,9 +340,11 @@ static void draw_progress_bar(const char *filename, uint32_t received, uint32_t 
     // Calculate bar fill
     uint8_t extra_blocks = 0;
     if (total > 0) {
-        uint16_t r16 = (uint16_t)(received >> 8);
-        uint16_t t16 = (uint16_t)(total >> 8);
-        extra_blocks = (t16 > 0) ? (uint8_t)((r16 * BAR_WIDTH) / t16) : 0;
+        // Scale both down until r*16 fits 16 bits (was r>>8 * 16: wrapped
+        // above 1 MB and truncated totals above 16 MB)
+        uint32_t r = received, t = total;
+        while (t > 4095) { t >>= 1; r >>= 1; }
+        if (t) extra_blocks = (uint8_t)(((uint16_t)r * BAR_WIDTH) / (uint16_t)t);
         if (extra_blocks > BAR_WIDTH) extra_blocks = BAR_WIDTH;
     }
     uint8_t visual_fill = (received > 0) ? 1 + extra_blocks : 0;
@@ -585,12 +583,12 @@ static uint8_t prompt_input_zone(const char *prompt, char *buf, uint8_t max_len,
     draw_cursor_underline(INPUT_START + (plen >> 6), plen & 63);
 
     // Wait for any held key to release (debounce between consecutive prompts)
-    { uint8_t w; for (w = 0; w < 10; w++) { HALT(); uart_drain_to_buffer(); } }
-    while (in_inkey() != 0) { HALT(); uart_drain_to_buffer(); }
+    wait_poll(10);
+    while (in_inkey() != 0) wait_poll(1);
 
     while (1) {
         HALT();
-        uart_drain_to_buffer();
+        net_poll();
 
         if (key_break_down()) {
             buf[0] = 0;
@@ -681,8 +679,7 @@ static void draw_cursor_underline(uint8_t y, uint8_t col)
     *ptr0 &= inv_mask;
     *ptr7 &= inv_mask;
 
-    uint8_t shift_pressed = key_shift_held();
-    uint8_t effective_caps = (caps_lock_mode ^ shift_pressed);
+    uint8_t effective_caps = (caps_lock_mode ^ cursor_shift_held);
 
     if (effective_caps) {
         *ptr0 |= mask;

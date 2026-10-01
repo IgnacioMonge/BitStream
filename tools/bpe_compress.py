@@ -27,13 +27,14 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SCRIPT_DIR)
 BUILD_DIR = os.path.join(ROOT, 'build')
 
-SRC_C_FILES = ['globals.c', 'ui.c', 'comms.c', 'ftp.c', 'commands.c', 'main.c']
+SRC_C_FILES = ['globals.c', 'ui.c', 'comms.c', 'net_esp.c', 'net_spectranext.c',
+               'fs_esx.c', 'fs_spectranext.c', 'ftp.c', 'commands.c', 'main.c']
 ASM_FILE = 'bitstream_asm.asm'
 
 # Functions whose string arguments are screen-only (go through main_puts BPE decoder)
 SCREEN_FUNCS = {
     'main_print', 'main_puts', 'main_puts2', 'fail',
-    'status_result', 'print_smart_path',
+    'status_result', 'print_smart_path', 'print_reply', 'report_reply',
 }
 
 # Functions whose string arguments must NOT be compressed
@@ -44,7 +45,7 @@ EXCLUDE_FUNCS = {
     'safe_copy', 'strcmp', 'strstr', 'strncmp', 'strncpy',
     'memcpy', 'strcpy', 'strcat', 'strncat',
     'str_append', 'char_append', 'u16_to_dec',
-    'ftp_command', 'prompt_input_zone',
+    'ftp_command', 'ftp_cmd_reply', 'ftp_transfer_begin', 'prompt_input_zone',
     'wait_for_string', 'wait_for_ftp_code_fast',
 }
 
@@ -268,6 +269,22 @@ def expand_token(idx, dictionary, depth=0):
 # Output generation
 # ============================================================================
 
+# Runtime limit: bpe_rstack in asm/bitstream_asm.asm holds 16 continuations.
+BPE_RSTACK_LEVELS = 16
+
+
+def token_depth(idx, dictionary, memo):
+    """Nesting depth reached while expanding token idx (1 = no nested token)."""
+    if idx in memo:
+        return memo[idx]
+    depth = 1
+    for byte in dictionary[idx]:
+        if byte >= TOKEN_START and (byte - TOKEN_START) < len(dictionary):
+            depth = max(depth, 1 + token_depth(byte - TOKEN_START, dictionary, memo))
+    memo[idx] = depth
+    return depth
+
+
 def generate_dict_asm(dictionary):
     """Generate BPE dictionary as ASM defb lines."""
     lines = []
@@ -372,6 +389,13 @@ def main():
     if len(dictionary) == 0:
         print("  No compression possible, skipping")
         return
+
+    memo = {}
+    max_depth = max(token_depth(i, dictionary, memo) for i in range(len(dictionary)))
+    if max_depth > BPE_RSTACK_LEVELS:
+        print(f"ERROR: BPE nesting depth {max_depth} exceeds bpe_rstack "
+              f"({BPE_RSTACK_LEVELS} levels)")
+        sys.exit(1)
 
     # 3. Backup originals
     os.makedirs(bpe_originals, exist_ok=True)

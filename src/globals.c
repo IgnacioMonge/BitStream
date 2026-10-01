@@ -55,43 +55,48 @@ _no_combo:
 }
 
 // 2. Verifica si la tecla física CAPS SHIFT está pulsada (para invertir mayúsculas)
+// "Clean" shift only: CAPS combined with a number key (cursors, DELETE,
+// EDIT...), SPACE (BREAK) or SYMBOL SHIFT is a function chord, not a
+// letter shift (SpecTalkZX _key_shift_held contract).
 static uint8_t key_shift_held(void)
 {
 #asm
-    ; 1. Chequear CAPS SHIFT (Fila 0xFEFE, bit 0)
     ld   bc, 0xFEFE
     in   a, (c)
-    bit  0, a            ; Bit 0 = 0 si está pulsado
-    jr   nz, _shift_no   ; Si no está pulsado, salir con 0
+    bit  0, a            ; CAPS SHIFT
+    jr   nz, _shift_no
 
-    ; 2. El Shift está pulsado. Ahora miramos si es "Shift Limpio" o "Shift Función".
-    ; Si se pulsa alguna tecla numérica (1-5 o 6-0) a la vez, es una función (Cursor, Edit...).
-
-    ; Chequear teclas 1-5 (Fila 0xF7FE)
-    ld   bc, 0xF7FE
+    ld   b, 0xF7         ; 1-5
     in   a, (c)
-    and  0x1F            ; Nos interesan los 5 bits bajos (teclas 1,2,3,4,5)
-    cp   0x1F            ; ¿Son todos 1 (ninguna pulsada)?
-    jr   nz, _shift_no   ; Si alguna está pulsada (ej: Edit, CapsLock, TrueVideo...), ignorar Shift
+    and  0x1F
+    cp   0x1F
+    jr   nz, _shift_no
 
-    ; Chequear teclas 6-0 (Fila 0xEFFE)
-    ld   bc, 0xEFFE
+    ld   b, 0xEF         ; 0-6
     in   a, (c)
-    and  0x1F            ; Nos interesan los 5 bits bajos (teclas 0,9,8,7,6)
-    cp   0x1F            ; ¿Son todos 1?
-    jr   nz, _shift_no   ; Si alguna está pulsada (ej: Cursores, Delete...), ignorar Shift
+    and  0x1F
+    cp   0x1F
+    jr   nz, _shift_no
 
-    ; 3. Shift limpio detectado (para escribir letras)
-    ld   l, 1
-    ld   h, 0
+    ld   b, 0x7F         ; SPACE (bit 0) / SYMBOL SHIFT (bit 1)
+    in   a, (c)
+    and  0x03
+    cp   0x03
+    jr   nz, _shift_no
+
+    ld   hl, 1
     ret
 
 _shift_no:
-    ld   l, 0
-    ld   h, 0
+    ld   hl, 0
     ret
 #endasm
 }
+
+// Shift state shown by the cursor. Sampled once per frame by the main loop
+// and promoted only after it has been stable for a few frames, so the CAPS
+// half of a chord (arrows, DELETE, BREAK) never flickers the cursor.
+static uint8_t cursor_shift_held;
 
 
 static uint8_t key_break_down(void)
@@ -137,13 +142,14 @@ static void invalidate_status_bar(void);
 static uint32_t parse_size_arg(const char *s) __z88dk_fastcall;
 static void redraw_input_from(uint8_t start_pos) __z88dk_fastcall;
 static void draw_cursor_underline(uint8_t y, uint8_t col);
-static uint8_t wait_for_ftp_code_fast(uint16_t max_frames, const char *code3);
 static void draw_status_bar_real(void);
 static void print_char64(uint8_t y, uint8_t col, uint8_t c, uint8_t attr) __z88dk_callee;
 static void put_char64_input_cached(uint8_t y, uint8_t col, uint8_t c, uint8_t attr);
 static void fail(const char *msg) __z88dk_fastcall;
 static void close_connection_sequence(void);
-extern void uart_drain_to_buffer(void);
+static void wait_poll(uint16_t frames) __z88dk_fastcall;
+static void wait_frames(uint16_t frames) __z88dk_fastcall;
+extern uint16_t parse_decimal(char **pp);
 static uint8_t prompt_input_zone(const char *prompt, char *buf, uint8_t max_len, uint8_t masked);
 
 // ============================================================================
@@ -170,19 +176,10 @@ static uint16_t file_buf_pos;
 // COMMON STRINGS (save code space)
 // ============================================================================
 
-static const char S_IPD0[] = "+IPD,0,";
-static const char S_IPD1[] = "+IPD,1,";
-static const char S_CLOSED1[] = "1,CLOSED";
-static const char S_PASV_FAIL[] = "PASV failed";
 static const char S_DATA_FAIL[] = "Data connect failed";
-static const char S_LIST_FAIL[] = "LIST send failed";
-static const char S_CRLF[]      = "\r\n";
 static const char S_CANCEL[]    = "Cancelled";
 static const char S_DOTS[]      = ".";
 static const char S_ERROR_TAG[] = "Error: ";
-static const char S_AT_CLOSE0[] = "AT+CIPCLOSE=0\r\n";
-static const char S_AT_CIPMUX[] = "AT+CIPMUX=1\r\n";
-static const char S_CMD_QUIT[]  = "QUIT\r\n";
 
 // Repeated UI strings (String Tail Merging optimization)
 static const char S_EMPTY[] = "---";
@@ -190,17 +187,9 @@ static const char S_NO_CONN[] = "Not connected";
 static const char S_LOGIN_BAD[] = "Login incorrect";
 static const char S_CHECKING[] = "Checking connection.";
 static const char S_OK[] = "OK";
-static const char S_ERROR[] = "ERROR";
 static const char S_UNKNOWN_CMD[] = "Unknown cmd. Type HELP";
 static const char S_DISCONN[] = "Disconnected";
-static const char S_CONNECT[] = "CONNECT";
-static const char S_CLOSED[] = "CLOSED";
-static const char S_ATE0[] = "ATE0\r\n";
-static const char S_AT[] = "AT\r\n";
 static const char S_NO_WIFI[] = "No WiFi";
-static const char S_0CLOSED[] = "0,CLOSED";
-static const char S_550[] = "550";
-static const char S_553[] = "553";
 static const char S_SLASH[] = "/";
 static const char S_LIST_HDR[] = "T      Size Filename";
 
@@ -216,7 +205,7 @@ static char wifi_client_ip[16] = "0.0.0.0";
 static char ftp_host[32] = "---";
 static char ftp_user[20] = "---";
 static char ftp_path[PATH_SIZE] = "---";
-static char data_ip[16];
+static char data_ip[32];   // dotted PASV address, or ftp_host when unroutable
 
 static uint16_t data_port;
 static uint8_t connection_state = STATE_DISCONNECTED;
@@ -238,10 +227,6 @@ static void clear_ftp_state(void)
 uint8_t main_line = MAIN_START;
 uint8_t main_col = 0;
 uint8_t current_attr = ATTR_LOCAL;
-
-// esxDOS detection
-extern uint8_t detect_esxdos(void);
-static uint8_t esxdos_available;
 
 // Progress bar state
 static uint8_t status_bar_overwritten;

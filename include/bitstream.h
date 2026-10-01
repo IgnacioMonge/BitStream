@@ -15,7 +15,9 @@
 #define APP_NAME_UPPER   "BitStreamZX"
 #define APP_VERSION      "1.3.0"
 
-#ifdef DIVMMC_UART
+#if defined(BITSTREAM_SPECTRANEXT)
+#define UART_INTERFACE   "Spectranext"
+#elif defined(DIVMMC_UART)
 #define UART_INTERFACE   "divMMC"
 #else
 #define UART_INTERFACE   "AY-3-8912"
@@ -103,10 +105,18 @@
 #define HISTORY_SIZE    4
 #define HISTORY_LEN     40
 
-// --- EXTERNAL AY-UART DRIVER ---
+// --- EXTERNAL UART DRIVER (classic builds) ---
+// divMMC backend: TX failures latch uart_tx_failed (fail-stop) until
+// ay_uart_init(). The AY bit-bang backend never fails a transmit.
+#ifndef BITSTREAM_SPECTRANEXT
 extern void     ay_uart_init(void);
 extern void     ay_uart_send(uint8_t byte) __z88dk_fastcall;
 extern void     ay_uart_send_block(void *buf, uint16_t len) __z88dk_callee;
 extern uint8_t  ay_uart_read(void);
 extern uint8_t  ay_uart_ready(void);
 extern uint8_t  ay_uart_ready_fast(void);
+extern void     uart_drain_to_buffer(void);
+extern void     uart_send_string(const char *s) __z88dk_fastcall;
+#endif
+
+#include "bitstream_net.h"

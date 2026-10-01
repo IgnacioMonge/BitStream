@@ -60,6 +60,8 @@ static void init_screen(void)
     main_line = MAIN_START;
     main_col = 0;
 
+    cache_row_y = 0xFF;     // renderer row cache starts invalid (BSS is 0 = row 0)
+
     invalidate_status_bar();
 
     draw_status_bar_real();
@@ -75,40 +77,38 @@ static void init_screen(void)
 
 static void check_connection_alive(void)
 {
+    char *p;
+    const char *reason = NULL;
+
     if (connection_state < STATE_FTP_CONNECTED) {
-        if (ay_uart_ready()) ay_uart_read();
+        net_poll();
         return;
     }
 
-    uint8_t prev_limit = uart_drain_limit;
     uart_drain_limit = 16;
-
-    if (try_read_line()) {
-        uint8_t disc = check_disconnect_message();
-        if (disc) {
-            const char *reason;
-            if (disc == 1) reason = "Remote host closed socket";
-            else if (str_contains(rx_line, "imeout")) reason = "Idle Timeout (421)";
-            else reason = "Service Closing (421)";
-
-            current_attr = ATTR_ERROR;
-            main_newline();
-            {
-                char *p = tx_buffer;
-                p = str_append(p, "Disconnected: ");
-                p = str_append(p, reason);
-            }
-            main_print(tx_buffer);
-            clear_ftp_state();
-            uart_send_string(S_AT_CLOSE0);
-            draw_status_bar();
-            main_newline();
-            redraw_input_from(0);
+    while ((p = net_ctrl_line()) != NULL) {
+        if (reply_code(p) == 421) {
+            reason = str_contains(p, "imeout") ? "Idle Timeout (421)" : "Service Closing (421)";
+            break;
         }
-        rx_pos = 0;
     }
+    uart_drain_limit = DRAIN_NORMAL;
+    if (!reason && net_ctrl_lost()) reason = "Remote host closed socket";
 
-    uart_drain_limit = prev_limit;
+    if (reason) {
+        current_attr = ATTR_ERROR;
+        if (main_col) main_newline();
+        {
+            char *q = tx_buffer;
+            q = str_append(q, "Disconnected: ");
+            q = str_append(q, reason);
+        }
+        main_print(tx_buffer);
+        net_ctrl_close();
+        clear_ftp_state();
+        draw_status_bar();
+        redraw_input_from(0);
+    }
 }
 
 static void print_intro_banner(void)
@@ -131,18 +131,16 @@ void main(void)
 
     print_intro_banner();
 
-    esxdos_available = detect_esxdos();
+    fs_init();
 
-    smart_init();
+    net_boot();
 
-    if (esxdos_available) {
-        current_attr = ATTR_RESPONSE;
-        main_puts("esxDOS detected");
-    } else {
-        current_attr = ATTR_ERROR;
-        main_puts("No esxDOS");
-    }
-    main_newline();
+    current_attr = fs_available ? ATTR_RESPONSE : ATTR_ERROR;
+#ifdef BITSTREAM_SPECTRANEXT
+    main_print(fs_available ? "XFS storage ready" : "No storage");
+#else
+    main_print(fs_available ? "esxDOS detected" : "No esxDOS");
+#endif
 
     current_attr = ATTR_LOCAL;
     main_print("Type HELP or !HELP. BREAK cancels.");
@@ -164,22 +162,28 @@ void main(void)
         }
 
         {
+            // Cursor shows CAPS LOCK xor a *clean* shift. The raw sample must
+            // hold for 3 frames before it is shown: the CAPS half of a chord
+            // (arrows, DELETE, BREAK) is pressed first and would flicker.
             static uint8_t prev_caps_mode;
-            static uint8_t prev_shift_state;
+            static uint8_t raw_shift;
+            static uint8_t raw_stable;
+            uint8_t s = key_shift_held();
 
             check_caps_toggle();
 
-            uint8_t curr_shift_state = key_shift_held();
+            if (s != raw_shift) {
+                raw_shift = s;
+                raw_stable = 0;
+            } else if (raw_stable < 3 && ++raw_stable == 3) {
+                cursor_shift_held = s;
+            }
 
-            if (prev_caps_mode != caps_lock_mode || prev_shift_state != curr_shift_state) {
-
-                prev_caps_mode = caps_lock_mode;
-                prev_shift_state = curr_shift_state;
-
+            if (prev_caps_mode != caps_lock_mode || raw_stable == 3) {
                 uint16_t char_abs = cursor_pos + input_prompt_len;
-                uint8_t cur_row = INPUT_START + (char_abs >> 6);
-                uint8_t cur_col = char_abs & 63;
-                draw_cursor_underline(cur_row, cur_col);
+                if (raw_stable == 3) raw_stable = 4;    // drawn once per change
+                prev_caps_mode = caps_lock_mode;
+                draw_cursor_underline(INPUT_START + (char_abs >> 6), char_abs & 63);
             }
         }
 

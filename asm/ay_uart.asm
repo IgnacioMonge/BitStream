@@ -602,3 +602,70 @@ secondByteFinished:
     ld l, a
     ei
     ret
+
+; =============================================================================
+; Transport helpers shared with the C layer (moved from bitstream_asm.asm so
+; each UART backend owns its own RX/TX loops; the divMMC backend has inline
+; versions). The bit-banged UART cannot fail a transmit, so _uart_tx_failed
+; (defined in C) is never set here.
+; =============================================================================
+
+    EXTERN _ring_buffer
+    EXTERN _rb_head
+    EXTERN _rb_tail
+    EXTERN _uart_drain_limit
+    PUBLIC _uart_drain_to_buffer
+    PUBLIC _uart_send_string
+
+; void uart_drain_to_buffer(void)
+; Reads bytes into the ring, up to uart_drain_limit, while the ring has room.
+_uart_drain_to_buffer:
+    push ix
+    ld a, (_uart_drain_limit)
+    ld ixl, a
+udtb_loop:
+    ld a, ixl
+    or a
+    jr z, udtb_done
+    call _ay_uart_ready_fast
+    ld a, l
+    or a
+    jr z, udtb_done
+    ld hl, (_rb_head)
+    inc hl
+    ld a, h
+    and 0x07
+    ld h, a
+    ld de, (_rb_tail)
+    or a
+    sbc hl, de
+    jr z, udtb_done         ; ring full
+    call _ay_uart_read      ; L = byte
+    ld a, l
+    ld hl, (_rb_head)
+    ld de, _ring_buffer
+    add hl, de
+    ld (hl), a
+    ld hl, (_rb_head)
+    inc hl
+    ld a, h
+    and 0x07
+    ld h, a
+    ld (_rb_head), hl
+    dec ixl
+    jr udtb_loop
+udtb_done:
+    pop ix
+    ret
+
+; void uart_send_string(const char *s) __z88dk_fastcall
+_uart_send_string:
+    ld a, (hl)
+    or a
+    ret z
+    push hl
+    ld l, a
+    call _ay_uart_send
+    pop hl
+    inc hl
+    jr _uart_send_string

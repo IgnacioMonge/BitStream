@@ -50,7 +50,9 @@ static void cmd_about(void)
     print_char_line(22, '-');
     current_attr = ATTR_LOCAL;
     main_print("(C) 2026 M. Ignacio Monge Garcia");
-#ifdef DIVMMC_UART
+#if defined(BITSTREAM_SPECTRANEXT)
+    main_print("Spectranext cartridge sockets + XFS");
+#elif defined(DIVMMC_UART)
     main_print("ESP8266 + divMMC/divTiesus UART");
 #else
     main_print("ESP8266 + AY-3-8912 bit-banging");
@@ -64,80 +66,35 @@ static void cmd_status(void)
     main_print("--- SYSTEM STATUS ---");
 
     if (connection_state >= STATE_FTP_CONNECTED) {
-        uint8_t saved_drain_limit = uart_drain_limit;
-        drain_mode_fast();
+        uint16_t code;
 
         main_puts("Verifying connection... ");
-        uart_flush_rx();
-        rb_flush();
-
-        if (ftp_command("NOOP")) {
-            uint16_t frames = 0;
-            uint8_t got_response = 0;
-            uint8_t cancelled = 0;
-            uint8_t got_disconnect = 0;
-
-            while (frames < 150) {
-                HALT();
-
-                if (key_break_down()) {
-                    cancelled = 1;
-                    break;
-                }
-
-                if (try_read_line()) {
-                    if (rx_line[0] >= '1' && rx_line[0] <= '5') {
-                        got_response = 1;
-                        break;
-                    }
-                    if (strncmp(rx_line, S_IPD0, 7) == 0) {
-                        char *ptr = strchr(rx_line, ':');
-                        if (ptr && ptr[1] >= '1' && ptr[1] <= '5') {
-                            got_response = 1;
-                            break;
-                        }
-                    }
-                    if (check_disconnect_message()) {
-                        clear_ftp_state();
-                        got_disconnect = 1;
-                        break;
-                    }
-                    rx_pos = 0;
-                }
-                frames++;
-            }
-
-            if (cancelled) {
-                fail(S_CANCEL);
-            } else if (got_response) {
-                main_print(S_OK);
-            } else if (got_disconnect) {
-                fail("FAILED (disconnected)");
-            } else {
-                fail("FAILED (timeout)");
-            }
+        code = ftp_cmd_reply("NOOP", 150);
+        if (code >= 200 && code < 300) {
+            main_print(S_OK);
+        } else if (code == FTP_CANCEL) {
+            fail(S_CANCEL);
+        } else if (code == FTP_LOST || code == 421) {
+            clear_ftp_state();
+            net_ctrl_close();
+            fail("FAILED (disconnected)");
+        } else if (code) {
+            fail("FAILED (bad reply)");
         } else {
-            fail("FAILED (send error)");
+            fail("FAILED (timeout)");
         }
         current_attr = ATTR_RESPONSE;
-
-        uart_drain_limit = saved_drain_limit;
     }
 
     main_puts("State: ");
     if (connection_state == STATE_DISCONNECTED) main_print(S_DISCONN);
     else if (connection_state == STATE_WIFI_OK) main_print("WiFi OK");
     else if (connection_state == STATE_FTP_CONNECTED) main_print("FTP Connected");
-    else if (connection_state == STATE_LOGGED_IN) main_print("Logged In");
-    else {
-        fail("Unknown");
-        current_attr = ATTR_RESPONSE;
-    }
+    else main_print("Logged In");
 
     {
         char *p = tx_buffer;
         p = str_append(p, "IP:    ");
-
         if (connection_state == STATE_DISCONNECTED || wifi_client_ip[0] == '0') {
              p = str_append(p, "not connected");
         } else {
@@ -155,8 +112,8 @@ static void cmd_status(void)
 
     {
         char *p = tx_buffer;
-        p = str_append(p, "Path:  ");
         uint8_t path_len = strlen(ftp_path);
+        p = str_append(p, "Path:  ");
         if (path_len > 57) {
             p = char_append(p, '~');
             p = str_append(p, ftp_path + path_len - 56);
@@ -165,7 +122,6 @@ static void cmd_status(void)
         }
         main_print(tx_buffer);
     }
-
 }
 
 static void cmd_help(void)
@@ -280,7 +236,6 @@ static void parse_command(char *line) __z88dk_fastcall
                     cmd_open(host, port);
 
                     if (connection_state >= STATE_FTP_CONNECTED) {
-                        wait_frames(10);
                         cmd_user(arg2, arg3[0] ? arg3 : "zx@zx.net");
                         if (connection_state == STATE_LOGGED_IN && init_path && init_path[0]) {
                             current_attr = ATTR_LOCAL;
@@ -290,8 +245,6 @@ static void parse_command(char *line) __z88dk_fastcall
                                 p = str_append(p, init_path);
                             }
                             main_print(tx_buffer);
-                            uint8_t w;
-                            for(w=0; w<25; w++) { uart_drain_to_buffer(); wait_frames(1); }
                             cmd_cd(init_path);
                         }
                         else if (connection_state == STATE_LOGGED_IN) {
@@ -326,7 +279,7 @@ static void parse_command(char *line) __z88dk_fastcall
                 safe_copy(ftp_host, S_EMPTY, sizeof(ftp_host));
                 safe_copy(ftp_user, S_EMPTY, sizeof(ftp_user));
                 safe_copy(ftp_path, S_EMPTY, sizeof(ftp_path));
-                full_initialization_sequence();
+                net_reinit();
                 return;
 
             case H_BANG_HE:  // !HELP

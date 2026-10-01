@@ -14,13 +14,13 @@ PUBLIC _skip_ws
 PUBLIC _str_append
 PUBLIC _char_append
 PUBLIC _u16_to_dec
-PUBLIC _uart_send_string
 PUBLIC _clear_line
 PUBLIC _clear_zone
 PUBLIC _scroll_main_zone
 PUBLIC _rb_pop
 PUBLIC _try_read_line_nodrain
-PUBLIC _uart_drain_to_buffer
+PUBLIC _rb_read_block
+PUBLIC _cache_row_y
 PUBLIC _parse_decimal
 PUBLIC _st_copy_n
 PUBLIC _print_str64_char
@@ -41,9 +41,6 @@ PUBLIC _utf8_to_ascii
 PUBLIC _hl_mul32
 PUBLIC _l_mul32
 PUBLIC _rx_pos_reset
-EXTERN _ay_uart_send
-EXTERN _ay_uart_ready_fast
-EXTERN _ay_uart_read
 EXTERN _current_attr
 EXTERN _main_col
 EXTERN _main_line
@@ -53,7 +50,9 @@ EXTERN _rb_tail
 EXTERN _rx_line
 EXTERN _rx_pos
 EXTERN _rx_overflow
-EXTERN _uart_drain_limit
+IFNDEF BITSTREAM_SPECTRANEXT
+EXTERN _uart_drain_to_buffer
+ENDIF
 
 ; -----------------------------------------------------------------------------
 ; void str_to_upper(char *s) __z88dk_fastcall
@@ -101,68 +100,6 @@ sw_next:
 ; =============================================================================
 
 ; -----------------------------------------------------------------------------
-; void uart_drain_to_buffer(void)
-; Reads bytes from UART into ring buffer, up to uart_drain_limit times.
-; Calls: _ay_uart_ready_fast (clobbers A,BC,HL)
-;        _ay_uart_read       (clobbers A,BC,DE,HL, byte in L)
-; Local: IXL = max_loop counter (safe, no DI/EI issues)
-; -----------------------------------------------------------------------------
-_uart_drain_to_buffer:
-    push ix
-    ld a, (_uart_drain_limit)
-    ld ixl, a               ; IXL = max_loop counter
-
-udtb_loop:
-    ; Check max_loop > 0
-    ld a, ixl
-    or a
-    jr z, udtb_done
-
-    ; Check UART ready
-    call _ay_uart_ready_fast
-    ld a, l
-    or a
-    jr z, udtb_done
-
-    ; Check RB_FULL: ((rb_head + 1) & MASK) == rb_tail
-    ld hl, (_rb_head)
-    inc hl
-    ld a, h
-    and 0x07                ; RING_BUFFER_MASK high byte
-    ld h, a
-    ld de, (_rb_tail)
-    or a
-    sbc hl, de
-    jr z, udtb_done         ; Buffer full
-
-    ; Read byte from UART
-    call _ay_uart_read
-    ; L = byte read
-
-    ; Store: ring_buffer[rb_head] = byte
-    ld a, l                 ; A = byte
-    ld hl, (_rb_head)
-    ld de, _ring_buffer
-    add hl, de
-    ld (hl), a              ; Store byte
-
-    ; Advance head: rb_head = (rb_head + 1) & 0x07FF
-    ld hl, (_rb_head)
-    inc hl
-    ld a, h
-    and 0x07
-    ld h, a
-    ld (_rb_head), hl
-
-    ; max_loop--
-    dec ixl
-    jr udtb_loop
-
-udtb_done:
-    pop ix
-    ret
-
-; -----------------------------------------------------------------------------
 ; int16_t rb_pop(void)
 ; Returns next byte from ring buffer (0..255), or -1 if empty.
 ; sccz80 return: HL
@@ -188,6 +125,62 @@ rbp_has_data:
     and 0x07                ; Mask high byte (RING_BUFFER_MASK = 0x07FF)
     ld d, a
     ld (_rb_tail), de
+    ret
+
+; -----------------------------------------------------------------------------
+; uint16_t rb_read_block(uint8_t *dst, uint16_t max) __z88dk_callee
+; Copies min(max, bytes buffered, bytes before the ring wraps) from the ring
+; tail to dst with LDIR and advances the tail. Returns the count (0 if empty).
+; sccz80 callee: SP+2=max, SP+4=dst.
+; -----------------------------------------------------------------------------
+_rb_read_block:
+    pop hl                  ; return address
+    pop bc                  ; max
+    pop de                  ; dst
+    push hl
+    push de                 ; keep dst
+    ld de, (_rb_tail)
+    ld hl, (_rb_head)
+    or a
+    sbc hl, de
+    ld a, h
+    and 0x07
+    ld h, a                 ; HL = buffered
+    call rbr_min            ; BC = min(max, buffered)
+    ld hl, 0x0800
+    or a
+    sbc hl, de              ; HL = bytes before wrap
+    call rbr_min            ; BC = min(BC, contiguous)
+    ld hl, _ring_buffer
+    add hl, de              ; HL = source
+    ex de, hl               ; DE = source, HL = tail
+    add hl, bc
+    ld a, h
+    and 0x07
+    ld h, a
+    ld (_rb_tail), hl       ; new tail
+    ex de, hl               ; HL = source
+    pop de                  ; DE = dst
+    ld a, b
+    or c
+    jr z, rbr_zero
+    push bc
+    ldir
+    pop hl                  ; HL = count
+    ret
+rbr_zero:
+    ld h, b
+    ld l, c
+    ret
+
+; BC = min(BC, HL). Preserves DE. Clobbers HL.
+rbr_min:
+    or a
+    sbc hl, bc
+    ret nc
+    add hl, bc
+    ld b, h
+    ld c, l
     ret
 
 ; -----------------------------------------------------------------------------
@@ -388,26 +381,6 @@ u16_do_print:
     ret
 
 ; =============================================================================
-; UART
-; =============================================================================
-
-; -----------------------------------------------------------------------------
-; void uart_send_string(const char *s) __z88dk_fastcall
-; Sends a NUL-terminated string via UART, one byte at a time.
-; Input: HL = string pointer
-; -----------------------------------------------------------------------------
-_uart_send_string:
-    ld a, (hl)
-    or a
-    ret z
-    push hl             ; save string pointer (ay_uart_send may clobber HL)
-    ld l, a             ; fastcall: byte in L
-    call _ay_uart_send
-    pop hl              ; restore string pointer
-    inc hl
-    jr _uart_send_string
-
-; =============================================================================
 ; SCREEN FUNCTIONS
 ; =============================================================================
 
@@ -418,12 +391,14 @@ asm_row_base:
     defw 0x4800, 0x4820, 0x4840, 0x4860, 0x4880, 0x48A0, 0x48C0, 0x48E0
     defw 0x5000, 0x5020, 0x5040, 0x5060, 0x5080, 0x50A0, 0x50C0, 0x50E0
 
-; Tabla de direcciones de atributos (24 filas)
-; Elimina calculo repetido de 0x5800 + y*32
-attr_row_base:
-    defw 0x5800, 0x5820, 0x5840, 0x5860, 0x5880, 0x58A0, 0x58C0, 0x58E0
-    defw 0x5900, 0x5920, 0x5940, 0x5960, 0x5980, 0x59A0, 0x59C0, 0x59E0
-    defw 0x5A00, 0x5A20, 0x5A40, 0x5A60, 0x5A80, 0x5AA0, 0x5AC0, 0x5AE0
+; attr_base_a: A = row (0..23) -> HL = 0x5800 + row*32. Clobbers DE.
+; (Replaces the 48-byte attr_row_base table.)
+attr_base_a:
+    ld l, a
+    call _l_mul32
+    ld de, 0x5800
+    add hl, de
+    ret
 
 ; -----------------------------------------------------------------------------
 ; Internal helper: clear one screen line
@@ -538,9 +513,12 @@ cz_done:
 
 ; =============================================================================
 ; SCROLL MAIN ZONE
-; Scrolls lines 4-18 -> 3-17, clears line 18
-; MAIN_START=3, MAIN_END=18
-; Pure ASM with DI/EI to avoid visual artifacts
+; Scrolls lines 4-18 -> 3-17, clears line 18 (MAIN_START=3, MAIN_END=18).
+; Runs with the caller's interrupt state (no DI): FRAMES and the keyboard
+; keep ticking. Copies use unrolled LDI (16 T/byte instead of LDIR's 21 T);
+; every block length is a multiple of 16. Forward copy with dst < src, so
+; the overlapping attribute move is safe. (SpecTalkZX smz_copy16n.)
+; Only _main_newline calls it, after draining the UART.
 ; =============================================================================
 
 ; Helper: apply scanline offset to HL(src) and DE(dst), preserves A=offset
@@ -555,86 +533,81 @@ smz_apply_offset:
     ld a, c
     ret
 
-_scroll_main_zone:
-    push iy
-    di
+; Copy BC bytes (non-zero multiple of 16) from HL to DE. Preserves A.
+smz_copy16n:
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    jp pe, smz_copy16n
+    ret
 
-    ; Looped scroll: 8 scanlines x 5 blocks
-    ; Block layout per scanline:
+_scroll_main_zone:
+    ; Block layout per scanline N:
     ;   B1: rows 4-7 -> 3-6    (128 bytes)  src=40+N:80 dst=40+N:60
     ;   B2: row 8 -> 7         (32 bytes)   src=48+N:00 dst=40+N:E0
     ;   B3: rows 9-15 -> 8-14  (224 bytes)  src=48+N:20 dst=48+N:00
     ;   B4: row 16 -> 15       (32 bytes)   src=50+N:00 dst=48+N:E0
     ;   B5: rows 17-18 -> 16-17 (64 bytes)  src=50+N:20 dst=50+N:00
-
     xor a                   ; A = scanline offset (0..7)
-
 smz_scanline_loop:
-    ; Block 1: rows 4-7 -> 3-6
-    ld h, 0x40
-    ld l, 0x80
-    ld d, 0x40
-    ld e, 0x60
+    ld hl, 0x4080
+    ld de, 0x4060
     call smz_apply_offset
     ld bc, 128
-    ldir
+    call smz_copy16n
 
-    ; Block 2: row 8 -> 7
-    ld h, 0x48
-    ld l, 0x00
-    ld d, 0x40
-    ld e, 0xE0
+    ld hl, 0x4800
+    ld de, 0x40E0
     call smz_apply_offset
     ld bc, 32
-    ldir
+    call smz_copy16n
 
-    ; Block 3: rows 9-15 -> 8-14
-    ld h, 0x48
-    ld l, 0x20
-    ld d, 0x48
-    ld e, 0x00
+    ld hl, 0x4820
+    ld de, 0x4800
     call smz_apply_offset
     ld bc, 224
-    ldir
+    call smz_copy16n
 
-    ; Block 4: row 16 -> 15
-    ld h, 0x50
-    ld l, 0x00
-    ld d, 0x48
-    ld e, 0xE0
+    ld hl, 0x5000
+    ld de, 0x48E0
     call smz_apply_offset
     ld bc, 32
-    ldir
+    call smz_copy16n
 
-    ; Block 5: rows 17-18 -> 16-17
-    ld h, 0x50
-    ld l, 0x20
-    ld d, 0x50
-    ld e, 0x00
+    ld hl, 0x5020
+    ld de, 0x5000
     call smz_apply_offset
     ld bc, 64
-    ldir
+    call smz_copy16n
 
-    ; Next scanline
     inc a
     cp 8
     jr nz, smz_scanline_loop
 
-    ; Scroll attributes (15 rows: row 4->3 ... row 18->17)
+    ; Attributes: rows 4..18 -> 3..17 (15 rows)
     ld hl, 0x5880
     ld de, 0x5860
     ld bc, 480
-    ldir
+    call smz_copy16n
 
     ; Clear last line (row 18) pixels + attributes
     ld a, (_current_attr)
     ld c, a
     ld a, 18                ; MAIN_END
-    call cli_internal
-
-    ei
-    pop iy
-    ret
+    jp cli_internal
 
 ; -----------------------------------------------------------------------------
 ; uint16_t parse_decimal(char **pp)
@@ -743,10 +716,12 @@ plf_attr_val: defs 1    ; Atributo a escribir (print_line64_fast)
 plf_y_val:    defs 1    ; Fila Y (print_line64_fast)
 cache_scr_base: defs 2  ; Screen base addr cacheada
 cache_atr_base: defs 2  ; Attr base addr cacheada
-cache_row_y:   defs 1   ; Fila Y del cache (0xFF = invalido)
+_cache_row_y:
+cache_row_y:   defs 1   ; Fila Y del cache (0xFF = invalido; C sets it at init)
 
 ; BPE decompression state
-bpe_rstack:    defs 16  ; Return stack for BPE expansion (8 levels x 2 bytes)
+bpe_rstack:    defs 32  ; Return stack for BPE expansion (16 levels x 2 bytes)
+bpe_rstack_end:
 bpe_rsp:       defs 2   ; Current position in bpe_rstack
 
 SECTION code_user
@@ -947,10 +922,9 @@ ug_loop:
     ret
 
 ; -----------------------------------------------------------------------------
-; Cache helpers: devuelven base de fila screen/attr usando cache si valido.
-; Input: (none, usa _g_ps64_y y cache_row_y)
-; Output: HL = base addr
-; Destroys: AF, DE (solo si cache miss)
+; p64_get_scr_base: HL = screen row base for _g_ps64_y, refreshing the
+; screen AND attribute cache on a miss (so cache_atr_base is valid after any
+; call). Destroys AF, DE (miss only).
 ; -----------------------------------------------------------------------------
 p64_get_scr_base:
     ld a, (cache_row_y)
@@ -961,6 +935,8 @@ p64_get_scr_base:
     ret
 p64_scr_miss:
     ld a, (hl)             ; A = g_ps64_y
+    ld (cache_row_y), a
+    push af
     add a, a
     ld l, a
     ld h, 0
@@ -971,107 +947,64 @@ p64_scr_miss:
     ld h, (hl)
     ld l, a                ; HL = screen row base
     ld (cache_scr_base), hl
-    ; Actualizar cache_row_y y calcular attr base tambien
-    ld a, (_g_ps64_y)
-    ld (cache_row_y), a
-    push hl                ; Guardar screen base
-    add a, a
-    ld l, a
-    ld h, 0
-    ld de, attr_row_base
-    add hl, de
-    ld a, (hl)
-    inc hl
-    ld h, (hl)
-    ld l, a
+    pop af
+    push hl
+    call attr_base_a
     ld (cache_atr_base), hl
-    pop hl                 ; Devolver screen base
-    ret
-
-p64_get_atr_base:
-    ld a, (cache_row_y)
-    ld hl, _g_ps64_y
-    cp (hl)
-    jr nz, p64_atr_miss
-    ld hl, (cache_atr_base)
-    ret
-p64_atr_miss:
-    call p64_get_scr_base  ; Esto cachea ambos
-    ld hl, (cache_atr_base)
+    pop hl
     ret
 
 ; -----------------------------------------------------------------------------
 ; void print_str64_char(uint8_t ch) __z88dk_fastcall
-; Draw a 4-pixel character at (g_ps64_y, g_ps64_col) with g_ps64_attr
-; Input: L = ASCII character
-; Destroys: AF, BC, DE, HL
+; Draw a 4-pixel character at (g_ps64_y, g_ps64_col) with g_ps64_attr.
+; Bytes outside 32..127 draw as space; 127 is the solid progress block.
+; Input: L = ASCII character. Destroys: AF, BC, DE, HL
 ; -----------------------------------------------------------------------------
 _print_str64_char:
     ld a, l
     cp 32
     jr c, p64_use_space
-    cp 127
-    jr z, p64_block         ; Special case: block char for progress bar
     cp 128
     jr c, p64_calc_font
 p64_use_space:
     ld a, 32
 
 p64_calc_font:
-    ; --- Space short-circuit: borrado directo sin unpack_glyph ---
+    ; --- Space short-circuit: clear the nibble without unpack_glyph ---
     cp 32
     jr nz, p64_not_space
 
-    ; Obtener screen base (cache o lookup)
     call p64_get_scr_base   ; HL = screen row base
     ld a, (_g_ps64_col)
     ld b, a
     srl a
-    ld e, a
-    ld d, 0
-    add hl, de              ; HL = screen address
+    add a, l                ; rows are 32-byte aligned: no carry
+    ld l, a
 
+    ld c, 0x0F              ; even column: keep right nibble
     bit 0, b
-    jr nz, p64_space_right
-
-    ; Espacio lado izquierdo: AND 0x0F en 8 scanlines
+    jr z, p64_space_go
+    ld c, 0xF0              ; odd column: keep left nibble
+p64_space_go:
     ld b, 8
-p64_space_left:
+p64_space_loop:
     ld a, (hl)
-    and 0x0F
+    and c
     ld (hl), a
     inc h
-    djnz p64_space_left
-    jr p64_set_attr
-
-p64_space_right:
-    ; Espacio lado derecho: AND 0xF0 en 8 scanlines
-    ld b, 8
-p64_space_right_loop:
-    ld a, (hl)
-    and 0xF0
-    ld (hl), a
-    inc h
-    djnz p64_space_right_loop
+    djnz p64_space_loop
     jr p64_set_attr
 
 p64_not_space:
-    ; Descomprimir glifo a glyph_buffer
     call unpack_glyph       ; A = char, returns HL = glyph_buffer
-    push hl                 ; Save font source
-
-    ; Obtener screen base (cache o lookup)
+    push hl
     call p64_get_scr_base   ; HL = screen row base
-
-    ; Add col/2 for physical X
     ld a, (_g_ps64_col)
-    ld b, a                 ; Save col for parity check
+    ld b, a
     srl a
-    ld e, a
-    ld d, 0
-    add hl, de              ; HL = screen address
-
-    pop de                  ; DE = glyph_buffer pointer
+    add a, l
+    ld l, a                 ; HL = screen address
+    pop de                  ; DE = glyph_buffer
 
     bit 0, b
     jr nz, p64_right
@@ -1081,7 +1014,6 @@ p64_not_space:
     and 0x0F
     ld (hl), a
     inc h
-
     ld b, 7
 p64_left_loop:
     ld a, (de)
@@ -1102,7 +1034,6 @@ p64_right:
     and 0xF0
     ld (hl), a
     inc h
-
     ld b, 7
 p64_right_loop:
     ld a, (de)
@@ -1115,66 +1046,14 @@ p64_right_loop:
     inc de
     inc h
     djnz p64_right_loop
-    jr p64_set_attr
-
-; --- Block character (0x7F) for progress bar ---
-; Pattern: 0xE0 (left) or 0x0E (right), scanlines 0,7 clear, 1-6 filled
-p64_block:
-    ; Obtener screen base (cache o lookup)
-    call p64_get_scr_base   ; HL = screen row base
-
-    ld a, (_g_ps64_col)
-    ld b, a
-    srl a
-    ld e, a
-    ld d, 0
-    add hl, de              ; HL = screen address
-
-    bit 0, b
-    jr nz, p64_block_right
-
-    ; Left block: pattern=0xE0, mask=0x0F
-    ld c, 0xE0
-    ld b, 0x0F
-    jr p64_block_draw
-
-p64_block_right:
-    ; Right block: pattern=0x0E, mask=0xF0
-    ld c, 0x0E
-    ld b, 0xF0
-
-p64_block_draw:
-    ; Scanline 0: clear
-    ld a, (hl)
-    and b
-    ld (hl), a
-    inc h
-    ; Scanlines 1-6: fill
-    ld d, 6
-p64_block_fill:
-    ld a, (hl)
-    and b
-    or c
-    ld (hl), a
-    inc h
-    dec d
-    jr nz, p64_block_fill
-    ; Scanline 7: clear
-    ld a, (hl)
-    and b
-    ld (hl), a
 
 p64_set_attr:
-    ; Obtener attr base (cache o lookup)
-    call p64_get_atr_base   ; HL = attr row base
-
+    ; p64_get_scr_base already refreshed cache_atr_base for this row
+    ld hl, (cache_atr_base)
     ld a, (_g_ps64_col)
     srl a
-    ld c, a
-    ld b, 0
-    add hl, bc
-
-    ; Escribir atributo solo si cambia
+    add a, l
+    ld l, a
     ld a, (_g_ps64_attr)
     cp (hl)
     ret z                   ; Skip if same attr already
@@ -1183,15 +1062,14 @@ p64_set_attr:
 
 ; -----------------------------------------------------------------------------
 ; void print_line64_fast(uint8_t y, const char *s, uint8_t attr)
-; __z88dk_callee
-; Renderiza una linea completa de 64 columnas procesando pares de caracteres.
-; Escribe bytes completos (sin AND/OR de preservacion), attr fill al final.
-; ~40-50% mas rapido que 64 llamadas individuales a print_str64_char.
+; Renders a full 64-column row two characters (one screen byte) at a time,
+; writing whole bytes (no AND/OR preservation), then fills 32 attributes.
+; NUL pads the rest of the row; bytes outside 32..127 render blank.
+; Blank pairs (both cells blank) skip both glyph unpacks (SpecTalkZX).
+; Vertical layout matches print_str64_char: scanline 0 blank, glyph rows on
+; scanlines 1..6, scanline 7 blank.
 ;
 ; sccz80 stack layout (args pushed left-to-right):
-;   SP+2 = attr (last pushed)
-;   SP+4 = s pointer (low, high)
-;   SP+6 = y
 ; After push ix: IX+0=saved IX, IX+2=ret addr, IX+4=attr, IX+6=s, IX+8=y
 ; -----------------------------------------------------------------------------
 _print_line64_fast:
@@ -1199,134 +1077,92 @@ _print_line64_fast:
     ld ix, 0
     add ix, sp
 
-    ; --- Calcular screen_row_base[y] una sola vez ---
+    ld a, (ix+4)
+    ld (plf_attr_val), a
+    ld e, (ix+6)
+    ld d, (ix+7)           ; DE = string pointer
     ld a, (ix+8)           ; y
+    ld (plf_y_val), a
     add a, a
     ld l, a
     ld h, 0
     ld bc, asm_row_base
     add hl, bc
-    ld c, (hl)
+    ld a, (hl)
     inc hl
-    ld b, (hl)             ; BC = screen base addr de la fila
+    ld h, (hl)
+    ld l, a                ; HL = screen addr (col 0, scanline 0)
 
-    ; Guardar attr y string pointer
-    ld a, (ix+4)
-    ld (plf_attr_val), a   ; attr para despues
-    ld e, (ix+6)
-    ld d, (ix+7)           ; DE = string pointer
-
-    ; Guardar y para attr fill al final
-    ld a, (ix+8)
-    ld (plf_y_val), a
-
-    push bc                ; Guardar screen base en stack
-    pop hl                 ; HL = screen addr (col 0, scanline 0)
-
-    ld b, 32               ; 32 pares de columnas (= 64 cols)
-
+    ld b, 32               ; 32 column pairs
 plf_pair_loop:
-    push bc                ; Guardar contador de pares
-    push hl                ; Guardar screen addr del byte actual
-
-    ; --- Leer char izquierdo ---
-    ld a, (de)
-    or a
-    jr z, plf_left_pad     ; NUL: no avanzar puntero, usar espacio
-    inc de                 ; Avanzar puntero
+    push bc
+    push hl                ; screen addr of this byte column
+    call plf_fetch
+    ld c, a                ; C = left char
+    call plf_fetch
+    ld b, a                ; B = right char
+    ld (plf_str_ptr), de
+    ld a, c
+    cp b
+    jr nz, plf_glyphs
     cp 32
-    jr c, plf_left_space   ; char < 32: tratar como espacio
-    cp 128
-    jr c, plf_left_ok      ; char 32-127: OK
-plf_left_space:
-    ld a, 32
-    jr plf_left_ok
-plf_left_pad:
-    ld a, 32
-plf_left_ok:
-    ; Guardar string pointer antes de unpack_glyph (destruye DE)
-    ex de, hl
-    ld (plf_str_ptr), hl
-    ex de, hl              ; A sigue teniendo el char
-    call unpack_glyph      ; HL = glyph_buffer, destruye AF/BC/DE
-    ; Copiar nibbles altos a plf_left_buf
-    ld hl, glyph_buffer
+    jr nz, plf_glyphs
+
+    ; --- blank pair: zero the 8 scanlines ---
+    pop hl
+    push hl
+    xor a
+    ld b, 8
+plf_blank_loop:
+    ld (hl), a
+    inc h
+    djnz plf_blank_loop
+    jr plf_next
+
+plf_glyphs:
+    push bc                ; B = right, C = left
+    ld a, c
+    call unpack_glyph      ; HL = glyph_buffer (destroys AF/BC/DE)
     ld de, plf_left_buf
     ld b, 8
 plf_save_left:
     ld a, (hl)
-    and 0xF0               ; Solo nibble alto (lado izquierdo)
+    and 0xF0
     ld (de), a
     inc hl
     inc de
     djnz plf_save_left
+    pop bc
+    ld a, b
+    call unpack_glyph      ; right glyph -> glyph_buffer
 
-    ; --- Leer char derecho ---
-    ld hl, (plf_str_ptr)
-    ex de, hl              ; DE = string pointer
-    ld a, (de)
-    or a
-    jr z, plf_right_pad    ; NUL: no avanzar puntero, usar espacio
-    inc de                 ; Avanzar puntero
-    cp 32
-    jr c, plf_right_space  ; char < 32: tratar como espacio
-    cp 128
-    jr c, plf_right_ok     ; char 32-127: OK
-plf_right_space:
-    ld a, 32
-    jr plf_right_ok
-plf_right_pad:
-    ld a, 32
-plf_right_ok:
-    ex de, hl
-    ld (plf_str_ptr), hl
-    ex de, hl              ; A sigue teniendo el char
-    call unpack_glyph      ; HL = glyph_buffer, destruye AF/BC/DE
-
-    ; --- Combinar y escribir 8 scanlines ---
-    ; Scanline 0 = blank (matches print_str64_char behavior)
-    pop hl                 ; HL = screen addr
-    push hl                ; Re-guardar para avanzar despues
-
-    ld (hl), 0             ; Scanline 0: clear
-    inc h                  ; Avanzar a scanline 1
-
+    pop hl
+    push hl                ; HL = screen addr
+    ld (hl), 0             ; scanline 0
+    inc h
     ld de, glyph_buffer
-    ld ix, plf_left_buf
-    ld b, 7                ; Scanlines 1-7: glyph data
+    ld ix, plf_left_buf    ; frame no longer needed (restored at exit)
+    ld b, 7
 plf_write_loop:
-    ld a, (ix+0)           ; Nibble alto del char izquierdo
-    ld c, a
-    ld a, (de)             ; Byte del char derecho
-    and 0x0F               ; Solo nibble bajo (lado derecho)
-    or c                   ; Combinar: left_high | right_low
-    ld (hl), a             ; Escribir byte completo a pantalla
+    ld a, (de)
+    and 0x0F
+    or (ix+0)
+    ld (hl), a
     inc ix
     inc de
-    inc h                  ; Siguiente scanline
+    inc h
     djnz plf_write_loop
 
-    ld hl, (plf_str_ptr)
-    ex de, hl              ; DE = string pointer para siguiente iteracion
-    pop hl                 ; Recuperar screen addr
-    inc hl                 ; Siguiente byte (siguiente par de columnas)
-
-    pop bc                 ; Recuperar contador de pares
+plf_next:
+    ld de, (plf_str_ptr)
+    pop hl
+    inc hl                 ; next byte column
+    pop bc
     djnz plf_pair_loop
 
-    ; --- Attr fill: escribir 32 atributos de golpe ---
+    ; --- Attr fill: 32 attributes ---
     ld a, (plf_y_val)
-    add a, a
-    ld l, a
-    ld h, 0
-    ld bc, attr_row_base
-    add hl, bc
-    ld c, (hl)
-    inc hl
-    ld b, (hl)
-    ; BC = attr base addr
-    ld h, b
-    ld l, c                ; HL = attr addr
+    call attr_base_a       ; HL = attr row
     ld a, (plf_attr_val)
     ld b, 32
 plf_attr_fill:
@@ -1334,19 +1170,32 @@ plf_attr_fill:
     inc hl
     djnz plf_attr_fill
 
-    ; Actualizar globals para consistencia
+    ; Update globals for consistency
     ld a, 64
     ld (_g_ps64_col), a
     ld a, (plf_y_val)
     ld (_g_ps64_y), a
     ld a, (plf_attr_val)
     ld (_g_ps64_attr), a
-
-    ; Invalidar cache (y cambio)
     ld a, 0xFF
-    ld (cache_row_y), a
+    ld (cache_row_y), a    ; invalidate row cache
 
     pop ix
+    ret
+
+; Fetch one cell: A = char 32..127 (blank for NUL/control/>=128).
+; NUL does not advance DE, so it pads the rest of the row.
+plf_fetch:
+    ld a, (de)
+    or a
+    jr z, pf_blank
+    inc de
+    cp 32
+    jr c, pf_blank
+    cp 128
+    ret c
+pf_blank:
+    ld a, 32
     ret
 
 ; =============================================================================
@@ -1407,7 +1256,11 @@ _main_newline:
     ld a, (_main_line)
     cp 18                   ; MAIN_END
     jr c, mn_inc
-    ; At bottom: scroll, keep main_line = MAIN_END
+    ; At bottom: scroll, keep main_line = MAIN_END. A scroll is ~90k T
+    ; (several 115200-baud FIFOs' worth): empty the UART into the ring first.
+IFNDEF BITSTREAM_SPECTRANEXT
+    call _uart_drain_to_buffer
+ENDIF
     jp _scroll_main_zone    ; tail call
 
 mn_inc:
@@ -1451,27 +1304,46 @@ puts_loop:
 ; On null, pops continuation and resumes original string.
 puts_bpe_expand:
     inc de                  ; advance past the token byte
-    ; Push continuation address (DE) onto BPE return stack
-    push hl                 ; save HL temporarily
-    ld hl, (bpe_rsp)
-    ld (hl), e
-    inc hl
-    ld (hl), d
-    inc hl
-    ld (bpe_rsp), hl
-    pop hl                  ; restore HL
-    ; Calculate dict entry: bpe_dict + (token - 0x80) * 3
+    ; Bound 1: the token must index an entry inside bpe_dict. Server text
+    ; (paths, names) can carry any byte >= 0x80; never walk past the table.
     sub 0x80
     ld l, a
     ld h, 0
     ld c, l
-    ld b, h                 ; BC = (token - 0x80)
-    add hl, hl              ; * 2
+    ld b, h
+    add hl, hl
     add hl, bc              ; * 3
     ld bc, bpe_dict
+    add hl, bc              ; HL = dict entry
+    push hl
+    ld bc, bpe_dict_end
+    or a
+    sbc hl, bc
+    pop hl
+    jr nc, puts_bpe_bad
+    ; Bound 2: return-stack depth
+    push hl
+    ld hl, (bpe_rsp)
+    ld bc, bpe_rstack_end
+    or a
+    sbc hl, bc
+    jr z, puts_bpe_full
     add hl, bc
-    ex de, hl               ; DE = &bpe_dict[(token-0x80)*3]
-    jr puts_loop            ; continue reading from dict entry
+    ld (hl), e              ; push continuation
+    inc hl
+    ld (hl), d
+    inc hl
+    ld (bpe_rsp), hl
+    pop de                  ; DE = dict entry
+    jr puts_loop
+puts_bpe_full:
+    pop hl
+puts_bpe_bad:
+    push de
+    ld l, '?'
+    call _main_putc
+    pop de
+    jr puts_loop
 
 puts_bpe_pop:
     ; Null byte: end of string or end of BPE dict entry
@@ -1821,6 +1693,10 @@ mp_scan:
     jr z, mp_fast           ; NUL found = fits on one line
     cp 0x80
     jr nc, mp_has_bpe       ; BPE token found: must use slow path
+    cp 10
+    jr z, mp_has_bpe        ; LF/CR need main_putc's newline handling
+    cp 13
+    jr z, mp_has_bpe
     inc de
     djnz mp_scan
     ; String > 64 chars: slow path
@@ -1875,128 +1751,90 @@ _main_puts2:
 
 ; =============================================================================
 ; void utf8_to_ascii(char *s) __z88dk_fastcall
-; Convert UTF-8 string to ASCII in-place
-; Input: HL = string pointer (modified in-place)
-; Handles Latin-1 Supplement (C2-C3 sequences): accented vowels, n-tilde, etc.
+; Convert UTF-8 (or stray Latin-1/CP1252) to printable ASCII, in place.
+;   - ASCII copies through.
+;   - A lead byte is honoured only if a continuation byte (80-BF) follows;
+;     otherwise it is taken as a single Latin-1 byte (C0-FF via the table),
+;     so "caf\xE9.txt" keeps its ".txt" (SpecTalkZX fix).
+;   - U+0080..U+00FF map to ASCII look-alikes; longer sequences become '?'
+;     after consuming only their real continuation bytes.
+;   - Stray continuation bytes become '?'. Output is always < 0x80, which
+;     keeps server text out of the BPE expander.
+; Input: HL = string (modified in place)
 ; =============================================================================
 _utf8_to_ascii:
-    push hl                 ; Save start for return
+    push hl
     ld d, h
     ld e, l                 ; DE = write ptr, HL = read ptr
-
 u8a_loop:
     ld a, (hl)
     or a
-    jp z, u8a_done
-
-    cp 0x80
-    jr c, u8a_copy          ; 00-7F: ASCII, copy
-
-    cp 0xC2
-    jr c, u8a_skip1         ; 80-C1: invalid continuation
-
-    cp 0xC4
-    jr c, u8a_latin1        ; C2-C3: Latin-1 Supplement
-
-    cp 0xE0
-    jr c, u8a_skip2         ; C4-DF: 2-byte, skip
-
-    cp 0xF0
-    jr c, u8a_skip3         ; E0-EF: 3-byte, skip
-
-    ; F0+: 4-byte sequence
-    inc hl
-    ld a, (hl) : or a : jr z, u8a_done
-    inc hl
-    ld a, (hl) : or a : jr z, u8a_done
-    inc hl
-    ld a, (hl) : or a : jr z, u8a_done
-    inc hl
-    ld a, '?'
-    jr u8a_store
-
-u8a_skip3:
-    inc hl
-    ld a, (hl) : or a : jr z, u8a_done
-u8a_skip2:
-    inc hl
-    ld a, (hl) : or a : jr z, u8a_done
-u8a_skip1:
-    inc hl
-    ld a, '?'
-    jr u8a_store
-
-u8a_copy:
-    ld (de), a
-    inc hl
-    inc de
-    jr u8a_loop
-
-u8a_latin1:
-    ; A = C2 or C3
-    ld b, a                 ; B = first byte
-    inc hl
-    ld a, (hl)
-    or a
     jr z, u8a_done
-    ld c, a                 ; C = second byte (80-BF)
     inc hl
-
-    ; Verify continuation byte (80-BF)
-    ld a, c
+    cp 0x80
+    jr c, u8a_store         ; ASCII
+    cp 0xC0
+    jr c, u8a_q             ; stray continuation (or CP1252 80-BF)
+    ld c, a                 ; C = lead
+    ld a, (hl)
     and 0xC0
     cp 0x80
-    jr nz, u8a_invalid
-
+    jr nz, u8a_latin1       ; no continuation: single Latin-1 byte
+    ld a, c
+    cp 0xC4
+    jr nc, u8a_skip_seq     ; beyond U+00FF
+    ld a, (hl)              ; continuation byte (80-BF)
+    inc hl
+    bit 0, c
+    jr nz, u8a_c3           ; C1/C3: U+00C0..U+00FF block
+    ; C0/C2: U+0080..U+00BF symbols
+    cp 0xA1
+    ld b, '!'
+    jr z, u8a_b
+    cp 0xBF
+    ld b, '?'
+    jr z, u8a_b
+    cp 0xAB
+    ld b, '<'
+    jr z, u8a_b
+    cp 0xBB
+    ld b, '>'
+    jr z, u8a_b
+    ld b, ' '
+u8a_b:
     ld a, b
-    cp 0xC3
-    jr z, u8a_c3
-
-    ; C2: codepoints 80-BF (symbols)
-    ld a, c
-    cp 0xA1                 ; inverted !
-    ld a, '!'
-    jr z, u8a_store
-    ld a, c
-    cp 0xBF                 ; inverted ?
-    ld a, '?'
-    jr z, u8a_store
-    ld a, c
-    cp 0xAB                 ; <<
-    ld a, '<'
-    jr z, u8a_store
-    ld a, c
-    cp 0xBB                 ; >>
-    ld a, '>'
-    jr z, u8a_store
-    ld a, ' '               ; rest -> space
     jr u8a_store
-
+u8a_latin1:
+    ld a, c                 ; Latin-1 C0-FF
 u8a_c3:
-    ; C3: codepoints C0-FF (accented vowels, n-tilde, etc.)
-    ; Table index = C & 3F
-    ld a, c
     and 0x3F
-    ld c, a
-    ld b, 0
     push hl
     ld hl, u8a_tbl_c0
-    add hl, bc
+    add a, l
+    ld l, a
+    adc a, h
+    sub l
+    ld h, a                 ; page-safe table add
     ld a, (hl)
     pop hl
     jr u8a_store
-
-u8a_invalid:
+u8a_skip_seq:
+    ld b, 3                 ; consume real continuation bytes only
+u8a_sk:
+    ld a, (hl)
+    and 0xC0
+    cp 0x80
+    jr nz, u8a_q
+    inc hl
+    djnz u8a_sk
+u8a_q:
     ld a, '?'
-
 u8a_store:
     ld (de), a
     inc de
-    jp u8a_loop
-
+    jr u8a_loop
 u8a_done:
-    xor a
-    ld (de), a
+    ld (de), a              ; A = 0
     pop hl
     ret
 
@@ -2059,3 +1897,4 @@ _rx_pos_reset:
 bpe_dict:
 ; --- BPE DICT START (replaced by bpe_compress.py) ---
 ; --- BPE DICT END ---
+bpe_dict_end:

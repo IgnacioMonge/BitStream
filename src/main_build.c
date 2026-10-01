@@ -5,10 +5,14 @@
 //   - Inline across module boundaries
 //   - Eliminate dead code globally
 //   - Deduplicate string constants
-// This saves ~200+ bytes vs separate compilation on Z80.
 //
 // Include order matters: each module can see symbols from all previous ones.
-// Forward declarations in globals.c bridge references to later modules.
+// Forward declarations in globals.c / bitstream_net.h bridge references to
+// later modules.
+//
+// Platform selection (Makefile):
+//   classic      ESP8266 over divMMC UART (-DDIVMMC_UART) or AY bit-bang
+//   spectranext  -DBITSTREAM_SPECTRANEXT: cartridge sockets + XFS
 // ============================================================================
 
 // 1. Global state, constants, keyboard ASM, common strings
@@ -17,14 +21,23 @@
 // 2. Video, widgets, input zone, keyboard
 #include "ui.c"
 
-// 3. Ring buffer, UART helpers, ESP layer, TCP
+// 3. Ring buffer, line state, timing helpers
 #include "comms.c"
 
-// 4. FTP protocol, esxDOS, download, list
+// 4. Transport + storage backends (bitstream_net.h seam)
+#ifdef BITSTREAM_SPECTRANEXT
+#include "net_spectranext.c"
+#include "fs_spectranext.c"
+#else
+#include "net_esp.c"
+#include "fs_esx.c"
+#endif
+
+// 5. FTP protocol, download, list
 #include "ftp.c"
 
-// 5. Command parser, help, status, special commands
+// 6. Command parser, help, status, special commands
 #include "commands.c"
 
-// 6. Screen initialization, main loop
+// 7. Screen initialization, main loop
 #include "main.c"

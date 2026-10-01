@@ -2,6 +2,8 @@
 # BitStream Makefile - FTP Client for ZX Spectrum
 # Default pipeline: CHECK -> CLEAN -> BUILD -> TRIM -> INFO
 # Default target: divMMC/divTiesus UART (115200 baud)
+# Other targets: AY bit-bang UART (make ay), Spectranext cartridge
+#                (make spectranext SPXN_DIR=<SpectraNext>/driver)
 # All build artifacts go to build/
 # ============================================================
 
@@ -12,6 +14,7 @@
 # ------------------------------------------------------------
 CC      = zcc
 TARGET  = +zx
+PYTHON ?= python3
 
 # ------------------------------------------------------------
 # Project
@@ -35,8 +38,18 @@ AY_UART     ?= 0
 ZORG        = 24000
 STACK_SIZE  = 512
 
-# Determine UART-specific settings
-ifeq ($(AY_UART),1)
+PLATFORM ?= classic
+SPXN_DIR ?= ../SpectraNext/driver
+
+# Determine transport-specific settings
+ifeq ($(PLATFORM),spectranext)
+  # Cartridge ROM sockets + XFS: no UART, no ESP, no esxDOS.
+  # spxn_rom.asm is the SpectraNext driver's jump-table bridge.
+  UART_FLAG   = -DBITSTREAM_SPECTRANEXT -Ca-DBITSTREAM_SPECTRANEXT
+  ASM_SOURCES = $(ASM_COMMON) $(SPXN_DIR)/spxn_rom.asm
+  UART_DESC   = Spectranext ROM sockets + XFS
+  OUTPUT_BASE = $(OUTPUT)_Spectranext
+else ifeq ($(AY_UART),1)
   UART_FLAG   = -DAY_UART
   ASM_SOURCES = $(ASM_COMMON) $(ASM_AY)
   UART_DESC   = AY bit-bang (9600 baud)
@@ -124,7 +137,7 @@ endef
 # ------------------------------------------------------------
 # Phony targets
 # ------------------------------------------------------------
-.PHONY: all check clean build trim info help ay divmmc both release version bpe-build bpe-restore
+.PHONY: all check clean build trim info help ay divmmc both spectranext targets release version bpe-build bpe-restore
 
 # ------------------------------------------------------------
 # Default pipeline (divMMC)
@@ -140,6 +153,12 @@ divmmc:
 both:
 	@$(MAKE) divmmc
 	@$(MAKE) ay
+spectranext:
+	@$(MAKE) PLATFORM=spectranext SPXN_DIR="$(SPXN_DIR)" all
+targets:
+	@$(MAKE) divmmc
+	@$(MAKE) ay
+	@$(MAKE) spectranext SPXN_DIR="$(SPXN_DIR)"
 
 help:
 	$(call HR)
@@ -149,7 +168,9 @@ help:
 	@printf "  make            Build divMMC version (default)\n"
 	@printf "  make ay         Build AY bit-bang version\n"
 	@printf "  make divmmc     Build divMMC version\n"
-	@printf "  make both       Build both versions\n"
+	@printf "  make both       Build both UART versions\n"
+	@printf "  make spectranext SPXN_DIR=...  Build Spectranext version\n"
+	@printf "  make targets    Build all three\n"
 	@printf "  make release    Release build (aggressive optimization)\n"
 	@printf "  make check      Preflight dependency checks\n"
 	@printf "  make clean      Remove build artifacts\n"
@@ -188,9 +209,7 @@ check:
 # ------------------------------------------------------------
 clean:
 	$(call STEP,1/3,Cleaning)
-	@rm -f $(BUILD_DIR)/$(OUTPUT)_*.tap $(BUILD_DIR)/$(OUTPUT)_*.map \
-	       $(BUILD_DIR)/$(OUTPUT)_*_CODE.bin $(BUILD_DIR)/$(OUTPUT)_divTiesus \
-	       $(BUILD_DIR)/$(OUTPUT)_AY $(LOG) \
+	@rm -f $(TAP) $(MAP) $(OUTPUT_PATH)_CODE.bin $(OUTPUT_PATH) $(LOG) \
 	       $(BUILD_DIR)/*.o $(BUILD_DIR)/*.bin $(BUILD_DIR)/*.sym 2>/dev/null || true
 	@rm -f $(OUTPUT)_*.tap $(OUTPUT)_*.map $(OUTPUT)_*_CODE.bin *.o *.sym 2>/dev/null || true
 	$(call OK,Clean complete.)
@@ -200,18 +219,18 @@ clean:
 # BPE phase: compress -> build -> restore (ALWAYS restore)
 # ------------------------------------------------------------
 bpe-build:
-	@python3 tools/bpe_compress.py
-	@$(MAKE) build; rc=$$?; python3 tools/bpe_compress.py --restore; exit $$rc
+	@$(PYTHON) tools/bpe_compress.py
+	@$(MAKE) build; rc=$$?; $(PYTHON) tools/bpe_compress.py --restore; exit $$rc
 
 bpe-restore:
-	@python3 tools/bpe_compress.py --restore
+	@$(PYTHON) tools/bpe_compress.py --restore
 
 # ------------------------------------------------------------
 # BUILD phase
 # ------------------------------------------------------------
 build: $(TAP)
 
-$(TAP): $(C_SOURCES) $(ASM_SOURCES) include/bitstream.h include/font64_data.h
+$(TAP): $(C_SOURCES) $(ASM_SOURCES) include/bitstream.h include/bitstream_net.h $(wildcard src/*.c)
 	$(call STEP,2/3,Build)
 	@echo "Compiling BitStream..."
 	@echo "UART mode: $(UART_DESC)"
