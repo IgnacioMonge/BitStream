@@ -166,6 +166,7 @@ def main():
     ap.add_argument('--masquerade', default='10.9.8.7',
                     help='PASV address advertised by the server (NAT case); "" disables')
     ap.add_argument('--keep', action='store_true', help='leave the emulator running')
+    ap.add_argument('--window', action='store_true', help='show the emulator window')
     args = ap.parse_args()
 
     sys.path.insert(0, str(args.zxespemu))
@@ -193,7 +194,7 @@ def main():
                               '--wifi-mode', 'simulated', '--verbose'],
                              stdout=modem_log, stderr=subprocess.STDOUT)
     zx.wait_for_uart(modem, uart)
-    command, _ = zx.artifact_emulator_command(args.tap, 'zxuno', uart, False, sd, True)
+    command, _ = zx.artifact_emulator_command(args.tap, 'zxuno', uart, not args.window, sd, True)
     zx.apply_uart_endpoint(command, uart)
     rport = zx.free_tcp_port()
     command[-1:-1] = ['--enable-remoteprotocol', '--remoteprotocol-port', str(rport)]
