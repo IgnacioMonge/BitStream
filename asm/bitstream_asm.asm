@@ -31,7 +31,9 @@ PUBLIC _main_puts
 PUBLIC _g_ps64_y
 PUBLIC _g_ps64_col
 PUBLIC _g_ps64_attr
+IFNDEF BITSTREAM_SPECTRANEXT
 PUBLIC _detect_esxdos
+ENDIF
 PUBLIC _asm_row_base
 PUBLIC _draw_big_char
 PUBLIC _draw_badge_dither
@@ -1621,6 +1623,7 @@ dbd_pattern:
     defb 0x3F               ; ..XXXXXX
     defb 0x7F               ; .XXXXXXX
 
+IFNDEF BITSTREAM_SPECTRANEXT
 ; -----------------------------------------------------------------------------
 ; uint8_t detect_esxdos(void)
 ; Returns: L=1 if esxDOS present, L=0 if not
@@ -1668,6 +1671,8 @@ _esx_not_present:
 
 esx_save_sp:     defw 0
 esx_save_errsp:  defw 0
+ENDIF
+
 
 ; =============================================================================
 ; void main_print(const char *s) __z88dk_fastcall
