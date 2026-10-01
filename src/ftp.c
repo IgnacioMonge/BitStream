@@ -366,7 +366,7 @@ static void cmd_open(const char *host, uint16_t port)
     }
 
 #ifdef BITSTREAM_SELFTEST_PROBE
-    net_ctrl_send("NOOP\r\n", 6);     // diagnostic: does RX need a prior TX?
+    { spxn_regs.a = nx_fd[NX_CTRL]; spxn_regs.de = (uint16_t)ftp_cmd_buffer; spxn_regs.bc = 0; spxn_rom_hlcall(ROM_SEND); }  // diagnostic: zero-length SEND
 #endif
     current_attr = ATTR_LOCAL;
     main_print("Waiting for banner.");
