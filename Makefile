@@ -219,11 +219,11 @@ clean:
 # BPE phase: compress -> build -> restore (ALWAYS restore)
 # ------------------------------------------------------------
 bpe-build:
-	@$(PYTHON) tools/bpe_compress.py
-	@$(MAKE) build; rc=$$?; $(PYTHON) tools/bpe_compress.py --restore; exit $$rc
+	@"$(PYTHON)" tools/bpe_compress.py
+	@$(MAKE) build; rc=$$?; "$(PYTHON)" tools/bpe_compress.py --restore; exit $$rc
 
 bpe-restore:
-	@$(PYTHON) tools/bpe_compress.py --restore
+	@"$(PYTHON)" tools/bpe_compress.py --restore
 
 # ------------------------------------------------------------
 # BUILD phase
