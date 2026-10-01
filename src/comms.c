@@ -58,7 +58,7 @@ static uint8_t confirm_disconnect(void)
     while (1) {
         uint8_t k;
         net_poll();
-        k = in_inkey();
+        k = key_scan();
         if (k == 'n' || k == 'N' || key_break_down()) {
             current_attr = ATTR_LOCAL;
             main_print(S_CANCEL);

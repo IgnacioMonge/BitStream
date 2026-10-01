@@ -96,7 +96,7 @@ _shift_no:
 // Shift state shown by the cursor. Sampled once per frame by the main loop
 // and promoted only after it has been stable for a few frames, so the CAPS
 // half of a chord (arrows, DELETE, BREAK) never flickers the cursor.
-static uint8_t cursor_shift_held;
+uint8_t cursor_shift_held;      // read by asm _draw_cursor_underline
 
 
 static uint8_t key_break_down(void)
@@ -141,10 +141,13 @@ extern char* skip_ws(char *p) __z88dk_fastcall;
 static void invalidate_status_bar(void);
 static uint32_t parse_size_arg(const char *s) __z88dk_fastcall;
 static void redraw_input_from(uint8_t start_pos) __z88dk_fastcall;
-static void draw_cursor_underline(uint8_t y, uint8_t col);
+extern void draw_cursor_underline(uint8_t y, uint8_t col) __z88dk_callee;
 static void draw_status_bar_real(void);
-static void print_char64(uint8_t y, uint8_t col, uint8_t c, uint8_t attr) __z88dk_callee;
-static void put_char64_input_cached(uint8_t y, uint8_t col, uint8_t c, uint8_t attr);
+extern void print_char64(uint8_t y, uint8_t col, uint8_t c, uint8_t attr) __z88dk_callee;
+extern void put_char64_input_cached(uint8_t y, uint8_t col, uint8_t c, uint8_t attr) __z88dk_callee;
+extern uint8_t key_scan(void);
+extern uint8_t read_key(void);
+extern uint8_t key_ss_arrow(void);
 static void fail(const char *msg) __z88dk_fastcall;
 static void close_connection_sequence(void);
 static void wait_poll(uint16_t frames) __z88dk_fastcall;

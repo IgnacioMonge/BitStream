@@ -43,6 +43,16 @@ PUBLIC _utf8_to_ascii
 PUBLIC _hl_mul32
 PUBLIC _l_mul32
 PUBLIC _rx_pos_reset
+PUBLIC _key_scan
+PUBLIC _read_key
+PUBLIC _key_ss_arrow
+PUBLIC _print_char64
+PUBLIC _put_char64_input_cached
+PUBLIC _draw_cursor_underline
+PUBLIC _plf_maxlen
+EXTERN _input_cache_char
+EXTERN _caps_lock_mode
+EXTERN _cursor_shift_held
 EXTERN _current_attr
 EXTERN _main_col
 EXTERN _main_line
@@ -1077,6 +1087,16 @@ p64_set_attr:
 ; After push ix: IX+0=saved IX, IX+2=ret addr, IX+4=attr, IX+6=s, IX+8=y
 ; -----------------------------------------------------------------------------
 _print_line64_fast:
+    ; One-shot cell limit: plf_left = maxlen + 1, or 0 for no limit
+    ld a, (_plf_maxlen)
+    or a
+    jr z, plf_nolimit
+    inc a
+plf_nolimit:
+    ld (plf_left), a
+    xor a
+    ld (_plf_maxlen), a
+
     push ix
     ld ix, 0
     add ix, sp
@@ -1188,8 +1208,16 @@ plf_attr_fill:
     ret
 
 ; Fetch one cell: A = char 32..127 (blank for NUL/control/>=128).
-; NUL does not advance DE, so it pads the rest of the row.
+; NUL does not advance DE, so it pads the rest of the row; so does an
+; exhausted _plf_maxlen limit (plf_left stops at 1).
 plf_fetch:
+    ld a, (plf_left)
+    or a
+    jr z, pf_read
+    dec a
+    jr z, pf_blank
+    ld (plf_left), a
+pf_read:
     ld a, (de)
     or a
     jr z, pf_blank
@@ -1706,9 +1734,45 @@ mp_scan:
     jr z, mp_has_bpe
     inc de
     djnz mp_scan
-    ; String > 64 chars: slow path
+
+    ; > 64 plain chars (SpecTalkZX word wrap): cut after the last space in
+    ; s[1..64] (the space itself is dropped), or hard at 64 if there is none.
+    ; Stack: [s]
     pop hl
-    jr mp_slow
+    push hl
+    ld de, 64
+    add hl, de              ; HL = &s[64]
+    ld b, 64
+mpw_scan:
+    ld a, (hl)
+    cp ' '
+    jr z, mpw_cut           ; B = cells to print
+    dec hl
+    djnz mpw_scan
+    ld b, 64                ; HL = s
+    add hl, de              ; next = s + 64
+    jr mpw_print
+mpw_cut:
+    inc hl                  ; next = after the space
+mpw_print:
+    ld a, b
+    ld (_plf_maxlen), a
+    ex (sp), hl             ; stack: [next], HL = s
+    ld a, (_main_line)
+    ld c, a
+    ld b, 0
+    push bc                 ; y
+    push hl                 ; s
+    ld a, (_current_attr)
+    ld c, a
+    push bc                 ; attr
+    call _print_line64_fast
+    pop bc
+    pop bc
+    pop bc
+    call _main_newline      ; main_col = 0
+    pop hl
+    jp _main_print_asm      ; rest of the string
 
 mp_has_bpe:
     ; String has BPE tokens: must decompress via slow path
@@ -1855,6 +1919,455 @@ u8a_tbl_c0:
     defb 'e','e','e','e','i','i','i','i'  ; E8-EF: èéêëìíîï
     defb 'o','n','o','o','o','o','o','/'  ; F0-F7: ðñòóôõö÷
     defb 'o','u','u','u','u','y','t','y'  ; F8-FF: øùúûüýþÿ
+
+; =============================================================================
+; KEYBOARD (SpecTalkZX _in_inkey / _read_key / _key_ss_arrow)
+; =============================================================================
+
+; -----------------------------------------------------------------------------
+; uint8_t key_scan(void) - one key from the matrix, translated.
+; L = code, 0 = none. Both shifts together = none (SS+CS chords belong to
+; key_ss_arrow). CAPS: 7 EDIT, 6 CAPS LOCK, 8/10/11/9 arrows, 12 DELETE,
+; 3 BREAK. Replaces the z88dk library in_inkey (~80 B smaller).
+; -----------------------------------------------------------------------------
+_key_scan:
+    ld bc, 0xFEFE
+    ld de, 0                ; E = table offset, D = 0 for the table add
+    in a, (c)
+    or 0xE1                 ; CAPS (bit 0) and bits 5-7 ignored
+    inc a
+    jr nz, ks_found
+    ld b, 0xFD
+ks_row_loop:
+    ld a, e
+    add a, 5
+    ld e, a
+    in a, (c)
+    or 0xE0
+    inc a
+    jr nz, ks_found
+    rlc b
+    jp m, ks_row_loop       ; $FD..$BF
+    ld e, 35                ; row $7F
+    in a, (c)
+    or 0xE2                 ; SYMBOL SHIFT (bit 1) ignored
+    inc a
+    jr nz, ks_found
+ks_none:
+    ld hl, 0
+    ret
+ks_found:
+    dec a                   ; restore the row byte
+ks_bitscan:
+    rra
+    jr nc, ks_got
+    inc e
+    jr ks_bitscan
+ks_got:
+    ld hl, ks_table
+    add hl, de
+    ld a, 0xFE
+    in a, (0xFE)
+    ld c, a                 ; bit 0 = 0: CAPS
+    ld a, 0x7F
+    in a, (0xFE)            ; bit 1 = 0: SYMBOL
+    bit 0, c
+    jr nz, ks_nocaps
+    bit 1, a
+    jr z, ks_none           ; both shifts
+    ld e, 40
+    jr ks_add
+ks_nocaps:
+    bit 1, a
+    jr nz, ks_lookup
+    ld e, 80
+ks_add:
+    add hl, de
+ks_lookup:
+    ld l, (hl)
+    ld h, 0
+    ret
+
+; Rows: $FE(CS,Z,X,C,V) $FD(A..G) $FB(Q..T) $F7(1..5) $EF(0..6) $DF(P..Y)
+;       $BF(EN,L,K,J,H) $7F(SP,SS,M,N,B)
+ks_table:
+    defb 0,  'z','x','c','v'
+    defb 'a','s','d','f','g'
+    defb 'q','w','e','r','t'
+    defb '1','2','3','4','5'
+    defb '0','9','8','7','6'
+    defb 'p','o','i','u','y'
+    defb 13, 'l','k','j','h'
+    defb 32, 0,  'm','n','b'
+    ; CAPS SHIFT
+    defb 0,  'Z','X','C','V'
+    defb 'A','S','D','F','G'
+    defb 'Q','W','E','R','T'
+    defb 7,  6,  0,  0,  8      ; EDIT, CAPS LOCK, -, -, LEFT
+    defb 12, 0,  9,  11, 10     ; DELETE, (GRAPH), RIGHT, UP, DOWN
+    defb 'P','O','I','U','Y'
+    defb 13, 'L','K','J','H'
+    defb 3,  0,  'M','N','B'    ; BREAK
+    ; SYMBOL SHIFT
+    defb 0,  ':','`','?','/'
+    defb '~','|',0x5C,'{','}'
+    defb 0,  0,  0,  '<','>'
+    defb '!','@','#','$','%'
+    defb '_',')','(', 39,'&'
+    defb 34, ';',0,  ']','['
+    defb 13, '=','+','-','^'
+    defb 32, 0,  '.',',','*'
+
+SECTION bss_user
+rk_last:      defs 1
+rk_timer:     defs 1
+rk_debounce:  defs 1
+_plf_maxlen:  defs 1        ; 0 = full row; else cells taken from the string
+plf_left:     defs 1        ; print_line64_fast: cells left + 1 (0 = no limit)
+SECTION code_user
+
+; -----------------------------------------------------------------------------
+; uint8_t read_key(void) - debounced key with auto-repeat (SpecTalkZX).
+; New key: emitted at once. Held: repeats after 20 frames every 3 (text),
+; 15/2 (left/right), 20/5 (up/down), 12/1 (DELETE). A shift released on a
+; held letter does not re-emit it. '0' is suppressed for 8 frames after
+; DELETE (CAPS released before 0).
+; -----------------------------------------------------------------------------
+_read_key:
+    call _key_scan
+    ld a, l
+    or a
+    jr nz, rk_got
+    ld (rk_last), a
+    ld (rk_timer), a
+    ld hl, rk_debounce
+    ld a, (hl)
+    or a
+    jr z, rk_zero
+    dec (hl)
+rk_zero:
+    ld hl, 0
+    ret
+rk_got:
+    ld b, a
+    cp '0'
+    jr nz, rk_new
+    ld hl, rk_debounce
+    ld a, (hl)
+    or a
+    jr z, rk_new
+    dec (hl)
+    jr rk_zero
+rk_new:
+    ld a, (rk_last)
+    cp b
+    jr z, rk_repeat
+    xor b
+    cp 32
+    jr nz, rk_emit_new      ; not just a case change
+    ld a, b
+    or 32
+    cp 'a'
+    jr c, rk_emit_new
+    cp 'z' + 1
+    jr nc, rk_emit_new
+    ld a, b
+    ld (rk_last), a
+    jr rk_zero
+rk_emit_new:
+    ld a, b
+    ld (rk_last), a
+    cp 12
+    jr z, rk_new_bs
+    sub 8
+    cp 2
+    ld a, 15
+    jr c, rk_set
+    ld a, 20
+rk_set:
+    ld (rk_timer), a
+    xor a
+    ld (rk_debounce), a
+    ld l, b
+    ld h, a
+    ret
+rk_new_bs:
+    ld a, 12
+    ld (rk_timer), a
+    ld a, 8
+    ld (rk_debounce), a
+    ld l, b
+    ld h, 0
+    ret
+rk_repeat:
+    ld a, b
+    cp 12
+    jr nz, rk_rep_timer
+    ld a, 8
+    ld (rk_debounce), a
+rk_rep_timer:
+    ld hl, rk_timer
+    ld a, (hl)
+    or a
+    jr z, rk_fire
+    dec (hl)
+    jr rk_zero
+rk_fire:
+    ld a, b
+    cp 12
+    ld a, 1
+    jr z, rk_rep_set
+    ld a, b
+    sub 8
+    cp 2
+    ld a, 2
+    jr c, rk_rep_set
+    ld a, b
+    sub 10
+    cp 2
+    ld a, 5
+    jr c, rk_rep_set
+    ld a, 3
+rk_rep_set:
+    ld (hl), a
+    ld l, b
+    ld h, 0
+    ret
+
+; -----------------------------------------------------------------------------
+; uint8_t key_ss_arrow(void) - SYMBOL+CAPS chords for line editing.
+; 0 none, 1 word left (5), 2 word right (8), 3 delete word (0),
+; 4 line start (7), 5 line end (6)
+; -----------------------------------------------------------------------------
+_key_ss_arrow:
+    ld hl, 0
+    ld a, 0x7F
+    in a, (0xFE)
+    bit 1, a
+    ret nz
+    ld a, 0xFE
+    in a, (0xFE)
+    rrca
+    ret c
+    ld a, 0xF7
+    in a, (0xFE)
+    inc l
+    bit 4, a
+    ret z                   ; 5
+    inc l
+    ld a, 0xEF
+    in a, (0xFE)
+    bit 2, a
+    ret z                   ; 8
+    inc l
+    bit 0, a
+    ret z                   ; 0
+    inc l
+    bit 3, a
+    ret z                   ; 7
+    inc l
+    bit 4, a
+    ret z                   ; 6
+    ld l, h
+    ret
+
+; =============================================================================
+; INPUT LINE CELLS (SpecTalkZX _put_char64_input_cached / _draw_cursor_underline)
+; sccz80 callee frames: args pushed left to right, 2 bytes each.
+; =============================================================================
+
+ATTR_INPUT_CELL EQU 0x20    ; PAPER_GREEN | INK_BLACK
+
+; void print_char64(uint8_t y, uint8_t col, uint8_t c, uint8_t attr) __z88dk_callee
+_print_char64:
+    pop hl                  ; return
+    pop de                  ; E = attr
+    ld a, e
+    ld (_g_ps64_attr), a
+    pop de                  ; E = c
+    pop bc                  ; C = col
+    ld a, c
+    ld (_g_ps64_col), a
+    ex (sp), hl             ; L = y, return address back on the stack
+    ld a, l
+    ld (_g_ps64_y), a
+    ld l, e
+    jp _print_str64_char
+
+; void put_char64_input_cached(uint8_t y, uint8_t col, uint8_t c, uint8_t attr) __z88dk_callee
+; Skips the redraw only if the cached character matches AND the real VRAM
+; attribute matches (cursor/clear helpers write VRAM behind the cache).
+_put_char64_input_cached:
+    pop hl                  ; return
+    pop de                  ; E = attr
+    pop bc
+    ld d, c                 ; D = c
+    pop bc
+    ld b, c                 ; B = col
+    ex (sp), hl
+    ld c, l                 ; C = y
+    ld a, c
+    sub 22                  ; INPUT_START
+    cp 2
+    ret nc
+    ld a, b
+    cp 64
+    ret nc
+    call pci_addr
+    ld a, (hl)
+    cp d
+    jr nz, pci_update
+    push hl
+    ld a, b
+    srl a
+    add a, 0xC0             ; row 22 attributes at $5AC0
+    ld l, a
+    ld h, 0x5A
+    ld a, c
+    cp 23
+    jr nz, pci_vattr
+    set 5, l                ; row 23 at $5AE0
+pci_vattr:
+    ld a, (hl)
+    pop hl
+    cp e
+    ret z
+pci_update:
+    ld (hl), d
+    ld a, c
+    ld (_g_ps64_y), a
+    ld a, b
+    ld (_g_ps64_col), a
+    ld a, e
+    ld (_g_ps64_attr), a
+    ld l, d
+    jp _print_str64_char
+
+; HL = &input_cache_char[C - 22][B]. Clobbers A.
+pci_addr:
+    ld hl, _input_cache_char
+    ld a, c
+    cp 23
+    ld a, b
+    jr nz, pci_a1
+    add a, 64
+pci_a1:
+    add a, l
+    ld l, a
+    ret nc
+    inc h
+    ret
+
+; void draw_cursor_underline(uint8_t y, uint8_t col) __z88dk_callee
+; Underline (scanline 7) normally; overline (scanline 0) when CAPS LOCK xor
+; the stable clean shift. Invalidates the cell's cache entry.
+_draw_cursor_underline:
+    pop hl                  ; return
+    pop de                  ; E = col
+    ex (sp), hl
+    ld c, l                 ; C = y
+    ld b, e                 ; B = col
+    ld a, c
+    sub 22
+    cp 2
+    jr nc, dcu_nocache
+    ld a, b
+    cp 64
+    jr nc, dcu_nocache
+    call pci_addr
+    ld (hl), 0xFF
+dcu_nocache:
+    ld a, b
+    srl a                   ; A = byte column, CF = odd column
+    ld e, a
+    ld d, 0xF0
+    jr nc, dcu_mask
+    ld d, 0x0F
+dcu_mask:
+    ld a, c
+    push de
+    call attr_base_a        ; HL = attribute row
+    pop de
+    ld a, e
+    add a, l
+    ld l, a
+    ld (hl), ATTR_INPUT_CELL
+    ld a, c
+    add a, a
+    ld l, a
+    ld h, 0
+    push de
+    ld de, asm_row_base
+    add hl, de
+    ld a, (hl)
+    inc hl
+    ld h, (hl)
+    ld l, a
+    pop de
+    ld a, e
+    add a, l
+    ld l, a                 ; scanline 0 of the cell
+    ld a, d
+    cpl
+    ld b, a                 ; keep-mask
+    ld a, (hl)
+    and b
+    ld (hl), a
+    ld a, h
+    add a, 7
+    ld h, a                 ; scanline 7
+    ld a, (hl)
+    and b
+    ld (hl), a
+    ld a, (_caps_lock_mode)
+    ld b, a
+    ld a, (_cursor_shift_held)
+    xor b
+    jr z, dcu_draw
+    ld a, h
+    sub 7
+    ld h, a
+dcu_draw:
+    ld a, (hl)
+    or d
+    ld (hl), a
+    ret
+
+; =============================================================================
+; FRAME CLOCK (NetChessZX frame_clock.asm) - classic builds only
+; divMMC/divIDE automap the esxDOS ROM at 0x0038, so with ROM IM1 every frame
+; interrupt pages esxDOS in and runs the ROM keyboard scan (which also wants
+; IY = $5C3A). A resident IM2 handler only advances FRAMES. The ULA puts
+; 0xFF on the bus, so the vector is read from I*256+0xFF = $FCFF..$FD00:
+; above BSS and below the stack (the Makefile checks both bounds).
+; Spectranext keeps ROM IM1: the cartridge relies on it.
+; =============================================================================
+IFNDEF BITSTREAM_SPECTRANEXT
+PUBLIC _frame_clock_init
+
+FC_VECTOR_PAGE  EQU 0xFC
+FC_VECTOR_PTR   EQU 0xFCFF
+FC_FRAMES       EQU 0x5C78
+
+_frame_clock_init:
+    di
+    ld hl, frame_clock_isr
+    ld (FC_VECTOR_PTR), hl
+    ld a, FC_VECTOR_PAGE
+    ld i, a
+    im 2
+    ei
+    ret
+
+frame_clock_isr:
+    push hl
+    ld hl, (FC_FRAMES)
+    inc hl
+    ld (FC_FRAMES), hl
+    pop hl
+    ei
+    reti
+ENDIF
 
 ; =============================================================================
 ; COPT HELPER ROUTINES

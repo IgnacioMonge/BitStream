@@ -76,6 +76,7 @@ CFLAGS = -vn -O3 -startup=0 -clib=new \
          -pragma-define:CLIB_MALLOC_HEAP_SIZE=0 \
          -pragma-define:CLIB_STDIO_HEAP_SIZE=0 \
          -pragma-define:CRT_STACK_SIZE=$(STACK_SIZE) \
+         -pragma-define:CRT_INITIALIZE_BSS=1 \
          $(EXTRA_CFLAGS)
 
 SIZE_TAP  = wc -c < "$(TAP)"
@@ -250,6 +251,14 @@ trim: $(TAP) $(MAP)
 	    exit 0; \
 	  fi; \
 	  trim=$$((0x$$bss - $(ZORG))); \
+	  end=$$(grep "__BSS_END_tail " $(MAP) | head -1 | sed "s/.*= .\([0-9A-Fa-f]*\).*/\1/"); \
+	  sp=$$(grep "__register_sp " $(MAP) | head -1 | sed "s/.*= .\([0-9A-Fa-f]*\).*/\1/"); \
+	  if [ -n "$$end" ] && [ $$((0x$$end)) -gt $$((0xFCFF)) ]; then \
+	    printf "$(C_RED)[ERROR]$(C_RESET) BSS ends at %s: overlaps the IM2 vector at FCFF\n" "$$end"; exit 1; \
+	  fi; \
+	  if [ -n "$$sp" ] && [ $$((0x$$sp - $(STACK_SIZE))) -le $$((0xFD00)) ]; then \
+	    printf "$(C_RED)[ERROR]$(C_RESET) stack (SP=%s, %d B) reaches the IM2 vector at FD00\n" "$$sp" $(STACK_SIZE); exit 1; \
+	  fi; \
 	  bin="$(OUTPUT_PATH)_CODE.bin"; \
 	  if [ ! -f "$$bin" ]; then bin="$(OUTPUT_PATH)"; fi; \
 	  if [ ! -f "$$bin" ]; then \

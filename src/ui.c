@@ -27,14 +27,9 @@ static void draw_status_bar(void)
 // UI INPUT CACHE (Optimized character rendering)
 // ============================================================================
 
-static uint8_t input_cache_char[INPUT_LINES][SCREEN_COLS];
+// Shared with asm/bitstream_asm.asm (_put_char64_input_cached, _draw_cursor_underline)
+uint8_t input_cache_char[INPUT_LINES][SCREEN_COLS];
 static uint8_t* attr_addr(uint8_t y, uint8_t phys_x);
-
-static void input_cache_invalidate_cell(uint8_t y, uint8_t col)
-{
-    if (y < INPUT_START || y > INPUT_END || col >= SCREEN_COLS) return;
-    input_cache_char[y - INPUT_START][col] = 0xFF;
-}
 
 // OPTIMIZED: memset is faster than nested loops (uses LDIR internally)
 static void input_cache_invalidate(void)
@@ -44,24 +39,8 @@ static void input_cache_invalidate(void)
 
 // line_buffer, line_len, cursor_pos are defined in globals.c
 
-// ============================================================================
-// CACHED INPUT CHARACTER
-// ============================================================================
-static void put_char64_input_cached(uint8_t y, uint8_t col, uint8_t c, uint8_t attr)
-{
-    if (y < INPUT_START || y > INPUT_END || col >= SCREEN_COLS) return;
-
-    uint8_t local_y = y - INPUT_START;
-    uint8_t *vram_attr = attr_addr(y, col >> 1);
-
-    // VRAM can be modified by cursor/clear helpers without updating the
-    // cache, so the real attribute byte is the second key.
-    if (input_cache_char[local_y][col] == c && *vram_attr == attr) return;
-
-    input_cache_char[local_y][col] = c;
-    print_char64(y, col, c, attr);
-}
-
+// put_char64_input_cached, print_char64, draw_cursor_underline, read_key,
+// key_scan and key_ss_arrow are in asm/bitstream_asm.asm (SpecTalkZX ports).
 
 static void input_add_char(uint8_t c) __z88dk_fastcall
 {
@@ -178,18 +157,6 @@ extern uint8_t g_ps64_y;
 extern uint8_t g_ps64_col;
 extern uint8_t g_ps64_attr;
 extern uint8_t cache_row_y;
-
-// C wrapper: sets globals and calls ASM renderer
-static void print_char64(uint8_t y, uint8_t col, uint8_t c, uint8_t attr) __z88dk_callee
-{
-    g_ps64_y = y;
-    g_ps64_col = col;
-    g_ps64_attr = attr;
-    print_str64_char(c);
-}
-
-
-
 
 // Double-height string: renders each char across rows Y and Y+1
 // Caller must clear_line both rows with desired attr BEFORE calling.
@@ -544,8 +511,8 @@ static void input_clear(void);
 static void input_backspace(void);
 static void input_left(void);
 static void input_right(void);
+static uint8_t input_ss_poll(void);
 static void input_add_char(uint8_t c) __z88dk_fastcall;
-static uint8_t read_key(void);
 
 // Prompt: shows prompt text in main zone, uses normal "> " input zone for typing.
 // masked: if 1, shows '*' (UP toggles visibility).
@@ -584,7 +551,7 @@ static uint8_t prompt_input_zone(const char *prompt, char *buf, uint8_t max_len,
 
     // Wait for any held key to release (debounce between consecutive prompts)
     wait_poll(10);
-    while (in_inkey() != 0) wait_poll(1);
+    while (key_scan() != 0) wait_poll(1);
 
     while (1) {
         HALT();
@@ -596,7 +563,7 @@ static uint8_t prompt_input_zone(const char *prompt, char *buf, uint8_t max_len,
             return 0xFF;
         }
 
-        c = read_key();
+        c = input_ss_poll() ? 0xFF : read_key();    // 0xFF: edited, re-mask
         ui_flush_dirty();
         if (c == 0) continue;
 
@@ -640,6 +607,12 @@ static uint8_t prompt_input_zone(const char *prompt, char *buf, uint8_t max_len,
                 if (row > INPUT_END) break;
                 put_char64_input_cached(row, col, '*', ATTR_INPUT);
             }
+            // The '*' over the cursor cell erased its underline
+            if (cursor_pos < line_len) {
+                uint16_t abs = cursor_pos + input_prompt_len;
+                if (INPUT_START + (abs >> 6) <= INPUT_END)
+                    draw_cursor_underline(INPUT_START + (abs >> 6), abs & 63);
+            }
         }
     }
 }
@@ -661,34 +634,6 @@ static void print_char_line(uint8_t len, char ch)
 // ============================================================================
 // INPUT ZONE
 // ============================================================================
-
-static void draw_cursor_underline(uint8_t y, uint8_t col)
-{
-    uint8_t phys_x = col >> 1;
-    uint8_t half = col & 1;
-    uint8_t *ptr0, *ptr7;
-
-    uint8_t mask = (half == 0) ? 0xF0 : 0x0F;
-    uint8_t inv_mask = ~mask;
-
-    *attr_addr(y, phys_x) = ATTR_INPUT;
-
-    ptr0 = screen_line_addr(y, phys_x, 0);
-    ptr7 = screen_line_addr(y, phys_x, 7);
-
-    *ptr0 &= inv_mask;
-    *ptr7 &= inv_mask;
-
-    uint8_t effective_caps = (caps_lock_mode ^ cursor_shift_held);
-
-    if (effective_caps) {
-        *ptr0 |= mask;
-    } else {
-        *ptr7 |= mask;
-    }
-
-    input_cache_invalidate_cell(y, col);
-}
 
 static void redraw_input_from(uint8_t start_pos) __z88dk_fastcall
 {
@@ -812,6 +757,82 @@ static void input_right(void)
     }
 }
 
+// ============================================================================
+// WORD / LINE NAVIGATION (SpecTalkZX: SYMBOL+CAPS + 5/8/0/7/6)
+// ============================================================================
+
+static void input_move_to(uint8_t pos) __z88dk_fastcall
+{
+    if (pos == cursor_pos) return;
+    refresh_cursor_char(cursor_pos, 0);
+    cursor_pos = pos;
+    refresh_cursor_char(cursor_pos, 1);
+}
+
+// Start of the word left of the cursor (spaces delimit words)
+static uint8_t word_left_pos(void)
+{
+    uint8_t p = cursor_pos;
+    while (p && line_buffer[p - 1] == ' ') p--;
+    while (p && line_buffer[p - 1] != ' ') p--;
+    return p;
+}
+
+// Start of the next word right of the cursor
+static uint8_t word_right_pos(void)
+{
+    uint8_t p = cursor_pos;
+    while (p < line_len && line_buffer[p] != ' ') p++;
+    while (p < line_len && line_buffer[p] == ' ') p++;
+    return p;
+}
+
+// Delete from the start of the word left of the cursor up to the cursor
+static void input_delete_word(void)
+{
+    uint8_t start = word_left_pos();
+    uint8_t old_len = line_len;
+    uint8_t i;
+
+    if (start == cursor_pos) return;
+    memmove(&line_buffer[start], &line_buffer[cursor_pos], line_len - cursor_pos + 1);
+    line_len -= cursor_pos - start;
+    cursor_pos = start;
+    redraw_input_from(start);
+    // redraw_input_from blanks at most 8 cells past the end
+    for (i = line_len; i < old_len; i++) {
+        uint16_t abs = i + input_prompt_len;
+        uint8_t row = INPUT_START + (abs >> 6);
+        if (row > INPUT_END) break;
+        if (i != cursor_pos) put_char64_input_cached(row, abs & 63, ' ', ATTR_INPUT_BG);
+    }
+}
+
+// Poll the SYMBOL+CAPS chords once per frame. Repeat: 12 frames, then 4.
+// Returns 1 when an edit ran. While a chord is held read_key sees nothing:
+// key_scan drops both-shift combinations.
+static uint8_t ss_last, ss_timer;
+
+static uint8_t input_ss_poll(void)
+{
+    uint8_t ss = key_ss_arrow();
+
+    if (!ss) { ss_last = 0; return 0; }
+    if (ss == ss_last) {
+        if (--ss_timer) return 0;
+        ss_timer = 4;
+    } else {
+        ss_last = ss;
+        ss_timer = 12;
+    }
+    if (ss == 1) input_move_to(word_left_pos());
+    else if (ss == 2) input_move_to(word_right_pos());
+    else if (ss == 3) input_delete_word();
+    else if (ss == 4) input_move_to(0);
+    else input_move_to(line_len);
+    return 1;
+}
+
 static void set_input_busy(uint8_t is_busy) __z88dk_fastcall
 {
     uint16_t cur_abs;
@@ -829,77 +850,5 @@ static void set_input_busy(uint8_t is_busy) __z88dk_fastcall
         }
     } else {
         redraw_input_from(cursor_pos);
-    }
-}
-
-// ============================================================================
-// KEYBOARD HANDLING (OPTIMIZED)
-// ============================================================================
-
-static uint8_t last_k;
-static uint16_t repeat_timer;
-static uint8_t debounce_zero;
-
-static uint8_t read_key(void)
-{
-    uint8_t k = in_inkey();
-
-    if (k == 0) {
-        last_k = 0;
-        repeat_timer = 0;
-        if (debounce_zero > 0) debounce_zero--;
-        return 0;
-    }
-
-    if (k == '0' && debounce_zero > 0) {
-        debounce_zero--;
-        return 0;
-    }
-
-    if (k != last_k) {
-        // Case-fold check: ignore shift release (e.g. 'S' -> 's')
-        uint8_t lk_fold = last_k | 32;
-        uint8_t k_fold = k | 32;
-        if (lk_fold == k_fold && lk_fold >= 'a' && lk_fold <= 'z') {
-            last_k = k;
-            return 0;
-        }
-
-        last_k = k;
-
-        if (k == KEY_BACKSPACE) {
-            repeat_timer = 12;
-            debounce_zero = 8;
-        } else if (k == KEY_LEFT || k == KEY_RIGHT) {
-            repeat_timer = 15;
-        } else if (k == KEY_UP || k == KEY_DOWN) {
-            repeat_timer = 15;
-        } else {
-            repeat_timer = 20;
-        }
-
-        return k;
-    }
-
-    if (k == KEY_BACKSPACE) debounce_zero = 8;
-
-    if (repeat_timer > 0) {
-        repeat_timer--;
-        return 0;
-    } else {
-        if (k == KEY_BACKSPACE) {
-            repeat_timer = 1;
-            return k;
-        }
-        if (k == KEY_LEFT || k == KEY_RIGHT) {
-            repeat_timer = 2;
-            return k;
-        }
-        if (k == KEY_UP || k == KEY_DOWN) {
-            repeat_timer = 5;
-            return k;
-        }
-
-        return 0;  // Normal keys don't repeat
     }
 }

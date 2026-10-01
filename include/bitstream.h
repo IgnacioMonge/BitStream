@@ -12,7 +12,6 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <input.h>
 
 // --- VERSION ---
 #define APP_NAME         "BitStreamZX"

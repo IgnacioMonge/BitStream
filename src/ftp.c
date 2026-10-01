@@ -1061,7 +1061,7 @@ static uint8_t list_emit(uint8_t type_mode, uint32_t min_size, const char *patte
                 main_col = 0;
                 return 0;
             }
-            if (in_inkey() != 0) break;
+            if (key_scan() != 0) break;
             if (idle_frames < 65535) idle_frames++;
             if (idle_frames >= FRAMES_LIST_PAUSE_RISKY) list_pause_risky = 1;
         }
@@ -1294,7 +1294,7 @@ static void cmd_quit(void)
     while (1) {
         uint8_t k;
         net_poll();
-        k = in_inkey();
+        k = key_scan();
 
         if (k == 'n' || k == 'N' || key_break_down()) {
             current_attr = ATTR_LOCAL;

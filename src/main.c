@@ -155,11 +155,18 @@ static void run_command(char *cmd) __z88dk_fastcall
 // ~4 minutes at 50fps = 12000 frames
 #define KEEPALIVE_INTERVAL 12000
 
+#ifndef BITSTREAM_SPECTRANEXT
+extern void frame_clock_init(void);
+#endif
+
 void main(void)
 {
     uint8_t c;
     uint16_t idle_frames = 0;
 
+#ifndef BITSTREAM_SPECTRANEXT
+    frame_clock_init();     // IM2 frame ISR (asm/bitstream_asm.asm)
+#endif
     init_screen();
 
     print_intro_banner();
@@ -235,6 +242,12 @@ void main(void)
             }
         }
 
+
+        if (input_ss_poll()) {                  // SYMBOL+CAPS line editing
+            idle_frames = 0;
+            ui_flush_dirty();
+            continue;
+        }
 
         c = read_key();
 
