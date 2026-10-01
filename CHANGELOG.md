@@ -5,6 +5,42 @@ All notable changes to BitStream are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [Unreleased] - audit-2026-10
+
+See `docs/audit-2026-10.md` for the full audit.
+
+### Fixed
+- Memory corruption when server text with bytes >= 0x80 (UTF-8 paths) reached
+  the BPE expander; expansion is now bounded and server text is folded to ASCII
+- Downloads are verified against `SIZE`; truncated transfers and 4xx/5xx final
+  replies fail and remove the partial file
+- RETR/LIST errors (425/426/450/451/530/550...) are shown instead of a silent
+  timeout; 0-byte files download correctly
+- FTP replies are parsed by code (RFC 959 multi-line aware), never by
+  substring search over the `+IPD` header
+- CIPSEND prompt wait no longer discards socket data nor abandons a send on BREAK
+- divMMC UART: no silent byte drops on TX (fail-stop latch), RX drained during TX,
+  ~3x faster RX drain
+- Garbled text when the glyph LUT crossed a page boundary
+- `utf8_to_ascii` no longer eats bytes after a Latin-1 character
+- Progress bar for files above 1 MB
+- PASV replies with an unroutable (NAT) address connect to the control host
+- ESP links left open after failed connects are closed; `!INIT` closes all links
+- Cursor caps indicator no longer flickers on CAPS chords (arrows, DELETE, BREAK)
+
+### Changed
+- Transport/storage seam (`include/bitstream_net.h`) with an `+IPD`
+  demultiplexer for the ESP backend
+- Local file is created right before RETR (no esxDOS work while data streams)
+- Scroll runs with interrupts enabled, unrolled LDI, UART drained first
+- `print_line64_fast` skips glyph unpacking for blank pairs
+- About 1.5 KB less code/BSS (more stack headroom)
+
+### Added
+- Spectranext build (`make spectranext SPXN_DIR=...`): cartridge sockets + XFS
+- `tools/test_asm_cpu.py` (z88dk-ticks) and `tools/e2e_zesarux.py`
+  (ZEsarUX + ZXESPEmu + pyftpdlib) test harnesses
+
 ## [1.3.0] - 2026-04-20
 
 ### Major: Safer Transfers and Protocol Hardening
