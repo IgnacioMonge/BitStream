@@ -230,6 +230,27 @@ def main():
         time.sleep(1.0)
         shot('01_boot')
 
+        # Line editing (SpecTalkZX chords, SYMBOL+CAPS + digit)
+        def chord(d):
+            z.tap('\x02', '\x01', d)
+        z.type('ab cd ef')
+        chord('0')              # delete word      -> "ab cd "
+        chord('5')              # word left        -> cursor before "cd"
+        z.type('X')
+        chord('7')              # line start
+        z.type('Y')
+        chord('6')              # line end
+        z.type('Z')
+        time.sleep(0.3)
+        n = mem('_line_len')[0]
+        line = mem('_line_buffer', 16)[:n]
+        check('line editing chords', line == b'Yab Xcd Z', repr(line))
+        shot('01b_edit')
+        for _ in range(n):
+            z.tap('\x01', '0')     # DELETE
+        time.sleep(0.3)
+        check('DELETE clears the line', mem('_line_len')[0] == 0)
+
         z.type(f'open 127.0.0.1:{ftp_port}\n')
         check('banner 220 -> FTP connected', wait(lambda: mem('_connection_state')[0] >= 2, 20, 'connect'))
         time.sleep(1.0)
