@@ -189,6 +189,7 @@ void main(void)
             safe_copy(cmd_buf, *t, sizeof(cmd_buf));
             run_command(cmd_buf);
             ui_flush_dirty();
+            wait_frames(250);       // let an observer capture the screen
         }
         current_attr = ATTR_RESPONSE;
         main_print("SELFTEST DONE");
