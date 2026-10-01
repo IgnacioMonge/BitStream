@@ -728,8 +728,11 @@ bpe_rsp:       defs 2   ; Current position in bpe_rstack
 
 SECTION code_user
 
-; LUT: 4-bit index -> 8-bit expanded pattern (both nibbles filled)
-ALIGN 16
+; LUT: 4-bit index -> 8-bit expanded pattern (both nibbles filled).
+; Not aligned: z80asm's ALIGN is relative to the module's section start, not
+; absolute, so the old "ALIGN 16, no carry" add broke whenever the linker put
+; the table at $xxF7..$xxFF (it did in the Spectranext build: $CCFE). The
+; lookup below carries into the high byte.
 font_lut:
     defb 0x00, 0x22, 0x44, 0x55, 0x66, 0x88, 0xAA, 0xCC, 0xEE, 0xFF
 
@@ -874,10 +877,9 @@ unpack_not_space:
     ex de, hl            ; DE = source
     ld hl, glyph_buffer  ; HL = destination
 
-    ; Setup alternate registers for LUT access (font_lut is ALIGN 16, no carry)
+    ; Alternate set: DE' = font_lut (page-safe lookup through HL')
     exx
-    ld hl, font_lut      ; H' = font_lut high byte (constant)
-    ld e, l              ; E' = font_lut low byte (base for add)
+    ld de, font_lut
     exx
 
     ; Unpack 3 bytes -> 6 lines (0-5)
@@ -892,9 +894,12 @@ ug_loop:
     rrca
     rrca
     and 0x0F
-    exx                  ; switch to alt set (H=lut_hi, E=lut_lo)
-    add a, e             ; A = font_lut_lo + nibble (no carry: ALIGN 16)
+    exx                  ; alt set: DE' = font_lut
+    add a, e
     ld l, a
+    adc a, d
+    sub l
+    ld h, a              ; HL' = font_lut + nibble, carry included
     ld a, (hl)           ; LUT lookup
     exx                  ; back to main set
     ld (hl), a
@@ -906,6 +911,9 @@ ug_loop:
     exx
     add a, e
     ld l, a
+    adc a, d
+    sub l
+    ld h, a
     ld a, (hl)
     exx
     ld (hl), a

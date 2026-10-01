@@ -39,7 +39,7 @@ def screen_addr(row, scan):
     return 0x4000 + ((row & 24) << 8) + ((row & 7) << 5) + scan * 256
 
 
-def run(body, setup=None, asm_text=ASM):
+def run(body, setup=None, asm_text=ASM, pad=0, want_code=False):
     with tempfile.TemporaryDirectory(prefix='bs-cpu-') as t:
         tmp = Path(t)
         defs = ''.join(f'PUBLIC {k}\nDEFC {k} = 0x{v:04X}\n' for k, v in GLOBALS.items())
@@ -55,6 +55,7 @@ entry:
     ld sp, 0xFF00
 {body}
     jp 0
+    defs {pad}
 _uart_drain_to_buffer:
     push hl
     ld hl, 0x{DRAIN_CALLS:04X}
@@ -84,6 +85,8 @@ SECTION bss_user
         assert r.returncode == 0, r.stdout + r.stderr
         after = (tmp / 'o.bin').read_bytes()[:65536]
         cycles = int(re.findall(r'\d+', r.stdout)[-1]) if re.findall(r'\d+', r.stdout) else -1
+        if want_code:
+            return before, after, cycles, code
         return before, after, cycles
 
 
@@ -335,7 +338,47 @@ scroll_di:
     print(f'PASS scroll_main_zone: geometry exact, IFF kept ({cyc} T, uncontended)')
 
 
+LUT = bytes([0x00, 0x22, 0x44, 0x55, 0x66, 0x88, 0xAA, 0xCC, 0xEE, 0xFF])
+
+
+def font_rows(code, ch):
+    base = code.index(LUT) + len(LUT)            # font64_packed follows font_lut
+    b = code[base + (ch - 32) * 3: base + (ch - 32) * 3 + 3]
+    return [LUT[n] for x in b for n in (x >> 4, x & 15)]
+
+
+def test_glyphs_any_lut_address():
+    chars = list(range(32, 128))
+    body = '    ld a, 0xFF\n    ld (_cache_row_y), a\n    ld a, 0x47\n    ld (_g_ps64_attr), a\n'
+    for i, ch in enumerate(chars):
+        body += f'''    ld a, {10 + i // 64}
+    ld (_g_ps64_y), a
+    ld a, {i % 64}
+    ld (_g_ps64_col), a
+    ld l, {ch}
+    call _print_str64_char
+'''
+    *_, code = run(body, want_code=True)
+    lut_at = 0x8000 + code.index(LUT)
+    tested = []
+    for low in (0xF8, 0xFE, (lut_at & 0xFF)):
+        pad = (low - (lut_at & 0xFF)) % 256
+        _, after, _, code2 = run(body, pad=pad, want_code=True)
+        at = 0x8000 + code2.index(LUT)
+        assert at & 0xFF == low, hex(at)
+        for i, ch in enumerate(chars):
+            row, col = 10 + i // 64, i % 64
+            rows = font_rows(code2, ch)
+            mask = 0xF0 if col % 2 == 0 else 0x0F
+            got = [after[screen_addr(row, sc) + col // 2] & mask for sc in range(8)]
+            want = [0] + [r & mask for r in rows] + [0]
+            assert got == want, f'char {ch} with font_lut at {at:04X}: {got} != {want}'
+        tested.append(f'{at:04X}')
+    print('PASS glyph decode for all 96 chars with font_lut at ' + ', '.join(tested))
+
+
 if __name__ == '__main__':
+    test_glyphs_any_lut_address()
     test_utf8()
     test_bpe_guard()
     test_main_print_lf()
