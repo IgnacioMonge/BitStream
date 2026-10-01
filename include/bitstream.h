@@ -3,6 +3,10 @@
 // ============================================================================
 #pragma once
 
+#ifdef BITSTREAM_SELFTEST_PROBE
+#define BITSTREAM_SELFTEST
+#endif
+
 #include <arch/zx.h>
 #include <stdio.h>
 #include <string.h>
