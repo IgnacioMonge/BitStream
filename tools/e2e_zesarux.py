@@ -203,6 +203,10 @@ def main():
     zx.apply_uart_endpoint(command, uart)
     rport = zx.free_tcp_port()
     command[-1:-1] = ['--enable-remoteprotocol', '--remoteprotocol-port', str(rport)]
+    if args.model == 'next':
+        # No NextZXOS SD image here: boot straight into the 48K ROM with the
+        # Next hardware enabled; ZEsarUX's esxDOS handler serves RST 8.
+        command[-1:-1] = ['--tbblue-fast-boot-mode']
     emu_log = (work / 'zesarux.log').open('wb')
     emu = subprocess.Popen(command, cwd=zx.RESOURCES, stdout=emu_log, stderr=subprocess.STDOUT)
 
