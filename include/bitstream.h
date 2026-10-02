@@ -95,8 +95,13 @@
 #define RING_BUFFER_SIZE 2048
 #define RING_BUFFER_MASK 0x07FF
 
-// --- DRAIN MODES ---
+// Hardware UART with a status register (divTIESUS, Next): ready can be polled
 #if defined(DIVMMC_UART) || defined(BITSTREAM_NEXT)
+#define HW_UART
+#endif
+
+// --- DRAIN MODES ---
+#ifdef HW_UART
 #define DRAIN_NORMAL    128
 #else
 #define DRAIN_NORMAL    32

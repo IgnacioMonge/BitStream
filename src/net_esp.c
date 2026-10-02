@@ -525,24 +525,52 @@ static void net_debug_dump(void)
 #define DBG_RX(c)
 #endif
 
+// Ring empty: on a hardware UART pull more if the line is still busy.
+// Returns 0 when there is nothing left to parse.
+static uint8_t dm_refill(void)
+{
+#ifdef HW_UART
+    if (ay_uart_ready()) {
+        uart_drain_to_buffer();
+        return 1;
+    }
+#endif
+    return 0;
+}
+
 // Drain the UART and consume the ring up to the next link-1 payload byte
 // (which stays in the ring for net_data_read).
+// A long multi-line reply (ftp.gnu.org: ~1 KB for CWD or PASS) arrives
+// faster than one drain per call can take it; parsing it from the ring
+// in C also takes time. The UART is therefore drained again every 32 parsed
+// bytes and whenever the ring runs dry, so its FIFO never overflows (a lost
+// byte desynchronises the +IPD framing for the rest of the session).
 static void dm_process(void)
 {
     int16_t c;
+    uint8_t n = 0;
 
     uart_drain_to_buffer();
     while (1) {
+#ifdef HW_UART
+        if (!(++n & 31)) uart_drain_to_buffer();
+#endif
         if (dm_state == DM_DATA) {
             if (!dm_discard) return;
             c = rb_pop();
-            if (c < 0) return;
+            if (c < 0) {
+                if (dm_refill()) continue;
+                return;
+            }
             DBG_RX(c);
             if (--dm_left == 0) dm_state = DM_LINE;
             continue;
         }
         c = rb_pop();
-        if (c < 0) return;
+        if (c < 0) {
+            if (dm_refill()) continue;
+            return;
+        }
         DBG_RX(c);
         if (dm_state == DM_CTRL) {
             dm_ctrl_byte((uint8_t)c);
