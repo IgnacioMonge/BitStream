@@ -18,6 +18,14 @@
 
 static const char S_CRLF[]      = "\r\n";
 static const char S_AT_CIPMUX[] = "AT+CIPMUX=1\r\n";
+// Another ESP program can leave the module in transparent mode (CIPMODE=1,
+// which also blocks CIPMUX=1) or in passive receive mode (CIPRECVMODE=1:
+// "+IPD,<id>,<len>" arrives without the data, which then waits for
+// AT+CIPRECVDATA). BridgeZX on the Next uses passive mode. Both settings are
+// volatile, so they are forced back on every bring-up; firmware without
+// CIPRECVMODE answers ERROR, which is harmless here.
+static const char S_AT_MODES[]  = "AT+CIPMODE=0\r\n";
+static const char S_AT_RECV[]   = "AT+CIPRECVMODE=0\r\n";
 static const char S_ATE0[]      = "ATE0\r\n";
 static const char S_AT[]        = "AT\r\n";
 static const char S_ERROR[]     = "ERROR";
@@ -192,6 +200,16 @@ static uint8_t check_wifi_connection(void)
     return found_ip ? 1 : 0;
 }
 
+static void esp_reset_modes(void)
+{
+    uart_send_string(S_AT_MODES);
+    wait_frames(5);
+    uart_flush_rx();
+    uart_send_string(S_AT_RECV);
+    wait_frames(5);
+    uart_flush_rx();
+}
+
 static void setup_ftp_mode(void)
 {
     while (ay_uart_ready()) ay_uart_read();
@@ -199,6 +217,8 @@ static void setup_ftp_mode(void)
     uart_send_string(S_ATE0);
     wait_frames(10);
     uart_flush_rx();
+
+    esp_reset_modes();
 
     uart_send_string(S_AT_CIPMUX);
     wait_frames(10);
@@ -287,6 +307,8 @@ static void smart_init(void)
     uart_send_string("AT+CIPCLOSE=5\r\n");
     wait_frames(5);
     uart_flush_rx();
+
+    esp_reset_modes();
 
     uart_send_string(S_AT_CIPMUX);
     wait_frames(5);
@@ -444,6 +466,65 @@ static void dm_line_byte(uint8_t c) __z88dk_fastcall
     if (dm_hpos < sizeof(dm_hdr) - 1) dm_hdr[dm_hpos++] = (char)c;
 }
 
+#ifdef BITSTREAM_DEBUG_RX
+// Diagnostic build (EXTRA_CFLAGS=-DBITSTREAM_DEBUG_RX): the last 256 bytes the
+// demultiplexer consumed since OPEN, dumped when the banner times out.
+#ifdef BITSTREAM_NEXT
+extern uint8_t  uart_dbg_status;
+extern uint16_t uart_dbg_bytes;
+#endif
+static uint8_t  dbg_rx[256];
+static uint8_t  dbg_pos;
+static uint16_t dbg_total;
+#define DBG_RX(c) do { dbg_rx[dbg_pos++] = (uint8_t)(c); dbg_total++; } while (0)
+
+static void net_debug_dump(void)
+{
+    static char row[65];
+    uint16_t n = dbg_total < 256 ? dbg_total : 256;
+    uint8_t i = (uint8_t)(dbg_pos - (uint8_t)n);
+    uint8_t col = 0;
+    char *p = tx_buffer;
+
+    p = str_append(p, "RX ");
+    p = u16_to_dec(p, dbg_total);
+    p = str_append(p, " ev=");
+    p = u16_to_dec(p, ev_flags);
+    p = str_append(p, " st=");
+    p = u16_to_dec(p, dm_state);
+    p = str_append(p, " left=");
+    p = u16_to_dec(p, dm_left);
+    p = str_append(p, " rdy=");
+    p = u16_to_dec(p, ctrl_ready);
+    p = str_append(p, " rb=");
+    p = u16_to_dec(p, rb_head);
+    p = char_append(p, '/');
+    p = u16_to_dec(p, rb_tail);
+#ifdef BITSTREAM_NEXT
+    p = str_append(p, " us=");
+    p = u16_to_dec(p, uart_dbg_status);
+    p = str_append(p, " n=");
+    u16_to_dec(p, uart_dbg_bytes);
+#endif
+    current_attr = ATTR_LOCAL;
+    main_print(tx_buffer);
+    while (n--) {
+        uint8_t c = dbg_rx[i++];
+        if (c == '\r') c = '<';
+        else if (c == '\n') c = '/';
+        else if (c < 32 || c > 126) c = '.';
+        row[col++] = (char)c;
+        if (col == 64 || !n) {
+            row[col] = 0;
+            main_print(row);
+            col = 0;
+        }
+    }
+}
+#else
+#define DBG_RX(c)
+#endif
+
 // Drain the UART and consume the ring up to the next link-1 payload byte
 // (which stays in the ring for net_data_read).
 static void dm_process(void)
@@ -456,11 +537,13 @@ static void dm_process(void)
             if (!dm_discard) return;
             c = rb_pop();
             if (c < 0) return;
+            DBG_RX(c);
             if (--dm_left == 0) dm_state = DM_LINE;
             continue;
         }
         c = rb_pop();
         if (c < 0) return;
+        DBG_RX(c);
         if (dm_state == DM_CTRL) {
             dm_ctrl_byte((uint8_t)c);
             if (--dm_left == 0) dm_state = DM_LINE;
@@ -574,6 +657,13 @@ static void net_poll(void) { dm_process(); }
 
 static uint8_t net_ctrl_open(const char *host, uint16_t port)
 {
+#ifdef BITSTREAM_DEBUG_RX
+    dbg_total = 0;
+#ifdef BITSTREAM_NEXT
+    uart_dbg_status = 0;
+    uart_dbg_bytes = 0;
+#endif
+#endif
     uart_flush_rx();
     rb_head = rb_tail = 0;
     dm_reset();

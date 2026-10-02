@@ -31,6 +31,14 @@ PUBLIC _ay_uart_ready_fast
 PUBLIC _uart_drain_to_buffer
 PUBLIC _uart_send_string
 PUBLIC _next_platform_init
+IFDEF BITSTREAM_DEBUG_RX
+PUBLIC _uart_dbg_status         ; OR of every drain status sample
+PUBLIC _uart_dbg_bytes          ; bytes the drain read from the UART
+SECTION bss_user
+_uart_dbg_status: defs 1
+_uart_dbg_bytes:  defs 2
+SECTION code_user
+ENDIF
 
 EXTERN _uart_tx_failed
 EXTERN _uart_drain_limit
@@ -294,12 +302,28 @@ dr_have:
     ld bc, UART_STATUS
 dr_poll:
     in a, (c)
+IFDEF BITSTREAM_DEBUG_RX
+    push af
+    push hl
+    ld hl, _uart_dbg_status
+    or (hl)
+    ld (hl), a
+    pop hl
+    pop af
+ENDIF
     rrca                    ; RX ready -> CF
     jr nc, dr_empty
 dr_read:
     inc b
     in a, (c)
     dec b
+IFDEF BITSTREAM_DEBUG_RX
+    push hl
+    ld hl, (_uart_dbg_bytes)
+    inc hl
+    ld (_uart_dbg_bytes), hl
+    pop hl
+ENDIF
     exx
     ld (hl), a
     inc hl
@@ -325,6 +349,15 @@ dr_empty:
     ld l, DRAIN_TAIL_POLLS
 dr_wait:
     in a, (c)
+IFDEF BITSTREAM_DEBUG_RX
+    push af
+    push hl
+    ld hl, _uart_dbg_status
+    or (hl)
+    ld (hl), a
+    pop hl
+    pop af
+ENDIF
     rrca
     jr c, dr_read
     dec l

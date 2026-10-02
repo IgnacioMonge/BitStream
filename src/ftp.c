@@ -389,7 +389,12 @@ static void cmd_open(const char *host, uint16_t port)
 
     net_ctrl_close();
     if (code == FTP_CANCEL) fail(S_CANCEL);
-    else if (code == 0) fail("FTP banner timeout");
+    else if (code == 0) {
+        fail("FTP banner timeout");
+#ifdef BITSTREAM_DEBUG_RX
+        net_debug_dump();
+#endif
+    }
     else if (code == FTP_LOST) fail("Connection rejected");
     else print_reply("Rejected: ", reply_text);
 }

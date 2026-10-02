@@ -27,6 +27,9 @@ See `docs/audit-2026-10.md` for the full audit.
 - PASV replies with an unroutable (NAT) address connect to the control host
 - ESP links left open after failed connects are closed; `!INIT` closes all links
 - Cursor caps indicator no longer flickers on CAPS chords (arrows, DELETE, BREAK)
+- ESP left in passive receive or transparent mode by another program (e.g.
+  BridgeZX on the Next): "+IPD" arrived without data and every OPEN timed
+  out; bring-up now resets CIPMODE and CIPRECVMODE
 - Static variables were not zeroed at startup (BSS trimmed from the TAP and
   not cleared by the CRT): a warm load inherited stale state
 
