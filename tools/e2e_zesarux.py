@@ -10,7 +10,7 @@ UART timing is not the divTIESUS FIFO. It exercises protocol logic, the
 demultiplexer, esxDOS writes and the screen paths.
 
 Usage (Windows, from the BitStream checkout, after `make`):
-    python tools/e2e_zesarux.py [--zxespemu C:/dev/ZXESPEmu] [--keep]
+    python tools/e2e_zesarux.py [--model zxuno|next] [--zxespemu C:/dev/ZXESPEmu] [--keep]
 Requires: pip install pyftpdlib
 """
 import argparse
@@ -162,7 +162,9 @@ def sha(p):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--zxespemu', type=Path, default=ROOT.parent / 'ZXESPEmu')
-    ap.add_argument('--tap', type=Path, default=ROOT / 'build/BitStream_divTiesus.tap')
+    ap.add_argument('--model', choices=('zxuno', 'next'), default='zxuno',
+                    help='zxuno: divTiesus build on ZX-Uno; next: Next build on TBBlue')
+    ap.add_argument('--tap', type=Path, help='default: the build for --model')
     ap.add_argument('--masquerade', default='10.9.8.7',
                     help='PASV address advertised by the server (NAT case); "" disables')
     ap.add_argument('--keep', action='store_true', help='leave the emulator running')
@@ -181,6 +183,9 @@ def main():
     shots = work / 'shots'
     shots.mkdir(exist_ok=True)
 
+    if args.tap is None:
+        args.tap = ROOT / ('build/BitStream_Next.tap' if args.model == 'next'
+                           else 'build/BitStream_divTiesus.tap')
     sym = symbols(args.tap.with_suffix('.map'))
     ftp_port = 2121
     server = start_ftp(ftp_root, ftp_port, args.masquerade)
@@ -194,7 +199,7 @@ def main():
                               '--wifi-mode', 'simulated', '--verbose'],
                              stdout=modem_log, stderr=subprocess.STDOUT)
     zx.wait_for_uart(modem, uart)
-    command, _ = zx.artifact_emulator_command(args.tap, 'zxuno', uart, not args.window, sd, True)
+    command, _ = zx.artifact_emulator_command(args.tap, args.model, uart, not args.window, sd, True)
     zx.apply_uart_endpoint(command, uart)
     rport = zx.free_tcp_port()
     command[-1:-1] = ['--enable-remoteprotocol', '--remoteprotocol-port', str(rport)]

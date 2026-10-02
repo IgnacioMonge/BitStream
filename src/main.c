@@ -158,12 +158,18 @@ static void run_command(char *cmd) __z88dk_fastcall
 #ifndef BITSTREAM_SPECTRANEXT
 extern void frame_clock_init(void);
 #endif
+#ifdef BITSTREAM_NEXT
+extern void next_platform_init(void);
+#endif
 
 void main(void)
 {
     uint8_t c;
     uint16_t idle_frames = 0;
 
+#ifdef BITSTREAM_NEXT
+    next_platform_init();   // 28 MHz (asm/next_uart.asm)
+#endif
 #ifndef BITSTREAM_SPECTRANEXT
     frame_clock_init();     // IM2 frame ISR (asm/bitstream_asm.asm)
 #endif

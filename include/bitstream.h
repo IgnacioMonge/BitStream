@@ -17,6 +17,8 @@
 
 #if defined(BITSTREAM_SPECTRANEXT)
 #define UART_INTERFACE   "Spectranext"
+#elif defined(BITSTREAM_NEXT)
+#define UART_INTERFACE   "Next"
 #elif defined(DIVMMC_UART)
 #define UART_INTERFACE   "divMMC"
 #else
@@ -94,7 +96,7 @@
 #define RING_BUFFER_MASK 0x07FF
 
 // --- DRAIN MODES ---
-#ifdef DIVMMC_UART
+#if defined(DIVMMC_UART) || defined(BITSTREAM_NEXT)
 #define DRAIN_NORMAL    128
 #else
 #define DRAIN_NORMAL    32

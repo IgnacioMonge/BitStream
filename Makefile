@@ -49,6 +49,12 @@ ifeq ($(PLATFORM),spectranext)
   ASM_SOURCES = $(ASM_COMMON) $(SPXN_DIR)/spxn_rom.asm
   UART_DESC   = Spectranext ROM sockets + XFS
   OUTPUT_BASE = $(OUTPUT)_Spectranext
+else ifeq ($(PLATFORM),next)
+  # ZX Spectrum Next internal UART + ESP, NextZXOS (esxDOS API), 28 MHz
+  UART_FLAG   = -DBITSTREAM_NEXT -Ca-DBITSTREAM_NEXT
+  ASM_SOURCES = $(ASM_COMMON) asm/next_uart.asm
+  UART_DESC   = ZX Spectrum Next UART (115200 baud)
+  OUTPUT_BASE = $(OUTPUT)_Next
 else ifeq ($(AY_UART),1)
   UART_FLAG   = -DAY_UART
   ASM_SOURCES = $(ASM_COMMON) $(ASM_AY)
@@ -138,7 +144,7 @@ endef
 # ------------------------------------------------------------
 # Phony targets
 # ------------------------------------------------------------
-.PHONY: all check clean build trim info help ay divmmc both spectranext targets release version bpe-build bpe-restore
+.PHONY: all check clean build trim info help ay divmmc both spectranext next targets release version bpe-build bpe-restore
 
 # ------------------------------------------------------------
 # Default pipeline (divMMC)
@@ -156,9 +162,12 @@ both:
 	@$(MAKE) ay
 spectranext:
 	@$(MAKE) PLATFORM=spectranext SPXN_DIR="$(SPXN_DIR)" all
+next:
+	@$(MAKE) PLATFORM=next all
 targets:
 	@$(MAKE) divmmc
 	@$(MAKE) ay
+	@$(MAKE) next
 	@$(MAKE) spectranext SPXN_DIR="$(SPXN_DIR)"
 
 help:
@@ -170,8 +179,9 @@ help:
 	@printf "  make ay         Build AY bit-bang version\n"
 	@printf "  make divmmc     Build divMMC version\n"
 	@printf "  make both       Build both UART versions\n"
+	@printf "  make next       Build ZX Spectrum Next version\n"
 	@printf "  make spectranext SPXN_DIR=...  Build Spectranext version\n"
-	@printf "  make targets    Build all three\n"
+	@printf "  make targets    Build all four\n"
 	@printf "  make release    Release build (aggressive optimization)\n"
 	@printf "  make check      Preflight dependency checks\n"
 	@printf "  make clean      Remove build artifacts\n"

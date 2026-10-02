@@ -12,6 +12,7 @@
 //
 // Platform selection (Makefile):
 //   classic      ESP8266 over divMMC UART (-DDIVMMC_UART) or AY bit-bang
+//   next         -DBITSTREAM_NEXT: ESP8266 over the Next UART (asm/next_uart.asm)
 //   spectranext  -DBITSTREAM_SPECTRANEXT: cartridge sockets + XFS
 // ============================================================================
 

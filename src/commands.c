@@ -52,6 +52,8 @@ static void cmd_about(void)
     main_print("(C) 2026 M. Ignacio Monge Garcia");
 #if defined(BITSTREAM_SPECTRANEXT)
     main_print("Spectranext cartridge sockets + XFS");
+#elif defined(BITSTREAM_NEXT)
+    main_print("ESP8266 + ZX Spectrum Next UART");
 #elif defined(DIVMMC_UART)
     main_print("ESP8266 + divMMC/divTiesus UART");
 #else
