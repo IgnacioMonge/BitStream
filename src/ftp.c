@@ -1089,12 +1089,12 @@ static uint8_t list_feed(const uint8_t *b, int16_t n, uint8_t type_mode,
     return 1;
 }
 
-#ifndef BITSTREAM_SPECTRANEXT
+#ifdef HW_UART
 // The ESP pushes data with no flow control: while the pager waits for a key
 // the UART overflows and the +IPD framing is lost (long listings stalled
 // after a few pages on hardware). The listing is therefore received into a
 // temporary file first and paged from there. Spectranext sockets have TCP
-// backpressure and stream directly.
+// backpressure and the AY UART is RTS-gated: both stream directly.
 static const char S_LIST_TMP[] = "BSLIST.TMP";
 
 // 1: spool complete (data connection closed, final reply not read yet);
@@ -1191,7 +1191,7 @@ static void cmd_list_core(const char *a1, const char *a2, const char *a3)
     list_header_printed = 0;
     list_pause_risky = 0;
 
-#ifndef BITSTREAM_SPECTRANEXT
+#ifdef HW_UART
     {
         uint8_t r = list_spool();
         if (r == 1) {
@@ -1252,7 +1252,7 @@ static void cmd_list_core(const char *a1, const char *a2, const char *a3)
         failed = 1;
     }
 
-#ifndef BITSTREAM_SPECTRANEXT
+#ifdef HW_UART
 list_done:
 #endif
     current_attr = failed ? ATTR_ERROR : ATTR_RESPONSE;

@@ -91,6 +91,7 @@ static uint16_t fs_write(uint8_t h, const void *buf, uint16_t len)
     __endasm;
 }
 
+#ifdef HW_UART
 static uint8_t fs_open_read(const char *name) __z88dk_fastcall
 {
     return esx_open_mode(name, 0x01);       // FA_READ
@@ -121,6 +122,7 @@ static uint16_t fs_read(uint8_t h, void *buf, uint16_t len)
         pop ix
     __endasm;
 }
+#endif
 
 static void fs_close(uint8_t h) __z88dk_fastcall
 {

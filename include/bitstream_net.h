@@ -46,7 +46,7 @@ static uint16_t fs_write(uint8_t h, const void *buf, uint16_t len);
 static void     fs_close(uint8_t h) __z88dk_fastcall;
 static void     fs_remove(const char *name) __z88dk_fastcall;
 static uint8_t  fs_commit(const char *name) __z88dk_fastcall;  // persist (1 ok)
-#ifndef BITSTREAM_SPECTRANEXT
+#ifdef HW_UART
 static uint8_t  fs_open_read(const char *name) __z88dk_fastcall; // FS_BAD on error
 static uint16_t fs_read(uint8_t h, void *buf, uint16_t len);     // 0 = end/error
 #endif
