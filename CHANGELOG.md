@@ -33,6 +33,8 @@ See `docs/audit-2026-10.md` for the full audit.
 - Long multi-line replies (~1 KB, e.g. ftp.gnu.org CWD) could overrun the
   UART FIFO and desynchronise the session; the UART is drained while parsing
   and a half-open frame is resynchronised before the next command
+- Long listings no longer stall in the pager: ESP builds receive the listing
+  into a temporary file (`BSLIST.TMP`) and page it from there
 - Static variables were not zeroed at startup (BSS trimmed from the TAP and
   not cleared by the CRT): a warm load inherited stale state
 

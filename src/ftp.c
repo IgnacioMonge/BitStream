@@ -1073,6 +1073,73 @@ static uint8_t list_emit(uint8_t type_mode, uint32_t min_size, const char *patte
     return 1;
 }
 
+// Feed raw LIST bytes to the line assembler. Returns 0 if the user stopped.
+static uint8_t list_feed(const uint8_t *b, int16_t n, uint8_t type_mode,
+                         uint32_t min_size, const char *pattern)
+{
+    while (n--) {
+        uint8_t c = *b++;
+        if (c == '\n') {
+            if (!list_emit(type_mode, min_size, pattern)) return 0;
+            list_line_pos = 0;
+        } else if (c >= 32 && list_line_pos < LIST_LINE_MAX) {
+            LIST_LINE[list_line_pos++] = c;
+        }
+    }
+    return 1;
+}
+
+#ifndef BITSTREAM_SPECTRANEXT
+// The ESP pushes data with no flow control: while the pager waits for a key
+// the UART overflows and the +IPD framing is lost (long listings stalled
+// after a few pages on hardware). The listing is therefore received into a
+// temporary file first and paged from there. Spectranext sockets have TCP
+// backpressure and stream directly.
+static const char S_LIST_TMP[] = "BSLIST.TMP";
+
+// 1: spool complete (data connection closed, final reply not read yet);
+// 0: failed and reported (temp file removed); 2: no storage, stream instead.
+static uint8_t list_spool(void)
+{
+    uint8_t handle;
+    uint16_t pos = 0;
+    int16_t n;
+    uint8_t werr = 0;
+
+    if (!fs_available) return 2;
+    handle = fs_create(S_LIST_TMP);
+    if (handle == FS_BAD) return 2;
+    if (!ftp_transfer_begin("LIST")) {
+        fs_close(handle);
+        fs_remove(S_LIST_TMP);
+        return 0;
+    }
+    drain_mode_fast();
+    while (1) {
+        n = ftp_xfer_read(file_buffer + pos, sizeof(file_buffer) - pos);
+        if (n == 0) continue;
+        if (n < 0) break;
+        pos += (uint16_t)n;
+        if (pos == sizeof(file_buffer)) {
+            if (fs_write(handle, file_buffer, pos) != pos) { werr = 1; break; }
+            pos = 0;
+        }
+    }
+    drain_mode_normal();
+    if (!werr && n == NET_EOF && pos && fs_write(handle, file_buffer, pos) != pos) werr = 1;
+    fs_close(handle);
+    if (!werr && n == NET_EOF) return 1;
+    fs_remove(S_LIST_TMP);
+    if (werr) {
+        net_data_close();
+        fail("Write error");
+    } else {
+        ftp_transfer_abort(n);
+    }
+    return 0;
+}
+#endif
+
 static void cmd_list_core(const char *a1, const char *a2, const char *a3)
 {
     int16_t n;
@@ -1124,6 +1191,43 @@ static void cmd_list_core(const char *a1, const char *a2, const char *a3)
     list_header_printed = 0;
     list_pause_risky = 0;
 
+#ifndef BITSTREAM_SPECTRANEXT
+    {
+        uint8_t r = list_spool();
+        if (r == 1) {
+            uint8_t handle;
+            uint16_t code = ftp_transfer_end();
+
+            failed = ftp_transfer_failed(code);
+            handle = fs_open_read(S_LIST_TMP);
+            if (handle != FS_BAD) {
+                uint16_t got;
+                while ((got = fs_read(handle, file_buffer, LIST_CHUNK)) != 0) {
+                    if (!list_feed(file_buffer, (int16_t)got, type_mode, min_size, pattern)) {
+                        stopped = 1;
+                        break;
+                    }
+                }
+                fs_close(handle);
+                if (!stopped && list_line_pos) list_emit(type_mode, min_size, pattern);
+            } else {
+                failed = 1;
+            }
+            fs_remove(S_LIST_TMP);
+            if (stopped) {
+                g_user_cancel = 1;
+                fail(S_CANCEL);
+                failed = 1;
+            }
+            goto list_done;
+        }
+        if (r == 0) {
+            failed = 1;
+            goto list_done;
+        }
+    }
+#endif
+
     if (!ftp_transfer_begin("LIST")) return;
     drain_mode_fast();
 
@@ -1131,19 +1235,7 @@ static void cmd_list_core(const char *a1, const char *a2, const char *a3)
         n = ftp_xfer_read(file_buffer, LIST_CHUNK);
         if (n == 0) continue;
         if (n < 0) break;
-        {
-            uint8_t *b = file_buffer;
-            while (n--) {
-                uint8_t c = *b++;
-                if (c == '\n') {
-                    if (!list_emit(type_mode, min_size, pattern)) { stopped = 1; break; }
-                    list_line_pos = 0;
-                } else if (c >= 32 && list_line_pos < LIST_LINE_MAX) {
-                    LIST_LINE[list_line_pos++] = c;
-                }
-            }
-        }
-        if (stopped) break;
+        if (!list_feed(file_buffer, n, type_mode, min_size, pattern)) { stopped = 1; break; }
     }
     drain_mode_normal();
 
@@ -1160,6 +1252,9 @@ static void cmd_list_core(const char *a1, const char *a2, const char *a3)
         failed = 1;
     }
 
+#ifndef BITSTREAM_SPECTRANEXT
+list_done:
+#endif
     current_attr = failed ? ATTR_ERROR : ATTR_RESPONSE;
     {
         char *p = tx_buffer;

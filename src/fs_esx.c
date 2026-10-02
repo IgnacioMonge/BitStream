@@ -91,6 +91,37 @@ static uint16_t fs_write(uint8_t h, const void *buf, uint16_t len)
     __endasm;
 }
 
+static uint8_t fs_open_read(const char *name) __z88dk_fastcall
+{
+    return esx_open_mode(name, 0x01);       // FA_READ
+}
+
+static uint16_t fs_read(uint8_t h, void *buf, uint16_t len)
+{
+    esx_handle = h;
+    esx_buffer = buf;
+    esx_length = len;
+
+    __asm
+        push ix
+        ld a, (_esx_handle)
+        ld hl, (_esx_buffer)
+        push hl
+        pop ix
+        ld bc, (_esx_length)
+        rst 0x08
+        defb 0x9D           ; F_READ
+        jr c, esx_read_fail
+        ld h, b
+        ld l, c
+        jr esx_read_done
+    esx_read_fail:
+        ld hl, 0
+    esx_read_done:
+        pop ix
+    __endasm;
+}
+
 static void fs_close(uint8_t h) __z88dk_fastcall
 {
     (void)h;
