@@ -721,6 +721,16 @@ static char *net_ctrl_line(void)
 static void net_ctrl_discard(void)
 {
     while (net_ctrl_line() != NULL) {}
+    // The ESP writes a +IPD frame in one go, so a frame still open while the
+    // line is idle means bytes were lost: resynchronise on the next header
+    // instead of swallowing every later reply as payload.
+    if ((dm_state == DM_CTRL || (dm_state == DM_DATA && dm_discard)) &&
+        rb_head == rb_tail && !ay_uart_ready()) {
+        dm_state = DM_LINE;
+        dm_left = 0;
+        dm_hpos = 0;
+        rx_pos = 0;
+    }
 }
 
 static uint8_t net_ctrl_lost(void)

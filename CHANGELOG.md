@@ -30,6 +30,9 @@ See `docs/audit-2026-10.md` for the full audit.
 - ESP left in passive receive or transparent mode by another program (e.g.
   BridgeZX on the Next): "+IPD" arrived without data and every OPEN timed
   out; bring-up now resets CIPMODE and CIPRECVMODE
+- Long multi-line replies (~1 KB, e.g. ftp.gnu.org CWD) could overrun the
+  UART FIFO and desynchronise the session; the UART is drained while parsing
+  and a half-open frame is resynchronised before the next command
 - Static variables were not zeroed at startup (BSS trimmed from the TAP and
   not cleared by the CRT): a warm load inherited stale state
 
