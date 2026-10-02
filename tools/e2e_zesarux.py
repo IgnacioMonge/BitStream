@@ -270,7 +270,7 @@ def main():
         check('banner 220 -> FTP connected', wait(lambda: mem('_connection_state')[0] >= 2, 20, 'connect'))
         time.sleep(1.0)
         z.type('\n')            # user: anonymous
-        time.sleep(0.6)
+        time.sleep(1.5)            # prompt debounce: 10 frames + key release
         z.type('\n')            # password: default
         check('login', wait(lambda: mem('_connection_state')[0] == 3, 20, 'login'))
         time.sleep(2.0)
@@ -323,7 +323,7 @@ def main():
         shot('08_search')
 
         z.type('quit\n')
-        time.sleep(0.8)
+        time.sleep(1.5)
         z.type('y')
         check('QUIT', wait(lambda: mem('_connection_state')[0] == 1, 15, 'quit'))
         shot('09_quit')
