@@ -93,11 +93,13 @@ class Zrcp:
             rows[r] &= ~(1 << c) & 0xFF
         self.cmd('set-ui-io-ports ' + ''.join(f'{v:02x}' for v in rows) + '00')
 
-    def tap(self, *pressed, hold=0.08, gap=0.08):
+    hold = gap = 0.08       # seconds; raised for TBBlue (see main)
+
+    def tap(self, *pressed):
         self.keys(pressed)
-        time.sleep(hold)
+        time.sleep(self.hold)
         self.keys(())
-        time.sleep(gap)
+        time.sleep(self.gap)
 
     def type(self, text):
         for ch in text:
@@ -218,6 +220,10 @@ def main():
 
     try:
         z = Zrcp(rport)
+        if args.model == 'next':
+            # TBBlue at 28 MHz can run below real time on a loaded host: an
+            # 80 ms key press may then span less than one emulated frame.
+            z.hold = z.gap = 0.15
 
         def mem(name, n=1):
             return z.peek(sym[name], n)
