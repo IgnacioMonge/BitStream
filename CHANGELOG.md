@@ -44,6 +44,8 @@ See `docs/audit-2026-10.md` for the full audit.
 - About 1 KB less code/BSS than 1.3.0 (more stack headroom)
 
 ### Added
+- ZX Spectrum Next build (`make next`): internal UART driver
+  (`asm/next_uart.asm`, baud from the video timing), CPU at 28 MHz
 - Spectranext build (`make spectranext SPXN_DIR=...`): cartridge sockets + XFS
 - Word/line editing: SYMBOL+CAPS SHIFT + 5/8 (word), 7/6 (line start/end),
   0 (delete word)

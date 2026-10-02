@@ -36,6 +36,7 @@ BitStream is a WiFi FTP client for the ZX Spectrum using an ESP8266/ESP-12 modul
   - **divMMC/divTiesus UART** (directly on the interface, 115200 baud) - recommended
   - **AY-3-8912 chip** (bit-banging, 9600 baud)
 - SD card with esxDOS
+- Or a **ZX Spectrum Next** with its internal ESP (NextZXOS)
 
 ### Software
 - esxDOS 0.8.x or higher
@@ -47,6 +48,7 @@ Download the release assets for your target hardware:
 
 - `BitStream_divTiesus.tap` for divMMC/divTiesus UART
 - `BitStream_AY.tap` for AY bit-banging
+- `BitStream_Next.tap` for the ZX Spectrum Next (internal UART, runs at 28 MHz)
 
 Copy the `.tap` file to your SD card and load it with `LOAD ""`, or launch the generated binary directly from esxDOS if you prefer.
 
@@ -184,6 +186,7 @@ asm/
   bitstream_asm.asm    # Core ASM routines
   divtiesus_uart.asm   # divMMC UART driver
   ay_uart.asm          # AY bit-bang driver
+  next_uart.asm        # ZX Spectrum Next UART driver
 tools/
   bpe_compress.py      # Build-time string compressor
   bpe_analyze.py       # BPE analysis helper
@@ -206,6 +209,15 @@ make ay
 
 # Build both versions
 make both
+
+# Build ZX Spectrum Next version
+make next
+
+# Build Spectranext version (needs the SpectraNext driver checkout)
+make spectranext SPXN_DIR=../SpectraNext/driver
+
+# All four
+make targets SPXN_DIR=../SpectraNext/driver
 
 # Release build (divMMC)
 make release
