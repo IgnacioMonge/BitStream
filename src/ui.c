@@ -429,14 +429,17 @@ static void draw_status_bar_real(void)
         clear_line(STATUS_LINE + 1, ATTR_STATUS);
 
         {
-            uint8_t *a20 = (uint8_t *)(0x5A80);
-            uint8_t *a21 = (uint8_t *)(0x5AA0);
-            for (i = 0; i < 2; i++)   { a20[i] = ATTR_LBL | BRIGHT; a21[i] = ATTR_LBL; }
-            for (i = 2; i < 10; i++)  { a20[i] = ATTR_VAL | BRIGHT; a21[i] = ATTR_VAL; }
-            for (i = 10; i < 13; i++) { a20[i] = ATTR_LBL | BRIGHT; a21[i] = ATTR_LBL; }
-            for (i = 13; i < 19; i++) { a20[i] = ATTR_VAL | BRIGHT; a21[i] = ATTR_VAL; }
-            for (i = 19; i < 22; i++) { a20[i] = ATTR_LBL | BRIGHT; a21[i] = ATTR_LBL; }
-            for (i = 22; i < 31; i++) { a20[i] = ATTR_VAL | BRIGHT; a21[i] = ATTR_VAL; }
+            static const uint8_t status_attr_runs[] = {
+                2, ATTR_LBL, 8, ATTR_VAL, 3, ATTR_LBL,
+                6, ATTR_VAL, 3, ATTR_LBL, 9, ATTR_VAL, 0
+            };
+            uint8_t *p = (uint8_t *)(0x5A80);
+            const uint8_t *r = status_attr_runs;
+            uint8_t n, a;
+            while ((n = *r++) != 0) {
+                a = *r++;
+                do { *p = a | BRIGHT; p[32] = a; ++p; } while (--n);
+            }
         }
 
         // Draw all 64 chars
