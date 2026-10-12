@@ -1169,15 +1169,10 @@ static void cmd_list_core(const char *a1, const char *a2, const char *a3)
     {
         char *p = tx_buffer;
 
-        if (pattern[0]) {
-            p = str_append(p, "Searching");
-        } else if (type_mode == 1) {
-            p = str_append(p, "Retrieving directories");
-        } else if (type_mode == 2) {
-            p = str_append(p, "Retrieving files");
-        } else {
-            p = str_append(p, "Retrieving directory contents");
-        }
+        p = str_append(p, pattern[0] ? "Searching" :
+                          type_mode == 1 ? "Retrieving directories" :
+                          type_mode == 2 ? "Retrieving files" :
+                          "Retrieving directory contents");
 
         if (pattern[0]) { p = str_append(p, " '"); p = str_append(p, pattern); p = char_append(p, '\''); }
         if (min_size) { p = str_append(p, " >"); p = u32_to_dec(p, min_size); p = char_append(p, 'B'); }
