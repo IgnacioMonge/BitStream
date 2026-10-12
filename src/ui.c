@@ -251,6 +251,10 @@ static void format_size(uint32_t bytes, char *buf)
 static char progress_current_file[13] = "";
 static char progress_buf[65];
 
+static const uint8_t dl_attr_runs[] = {
+    6, ATTR_DL_TEXT, 6, ATTR_DL_NAME, 10, ATTR_DL_TEXT, 8, ATTR_DL_BAR_ON, 2, ATTR_DL_TEXT
+};
+
 static void draw_progress_bar(const char *filename, uint32_t received, uint32_t total)
 {
     char line_buf[65];
@@ -282,13 +286,17 @@ static void draw_progress_bar(const char *filename, uint32_t received, uint32_t 
 
         // Attrs: Downloading(0-5) Name(6-11) Size(12-20) Bar(21-29) Spinner(30-31)
         {
-            uint8_t *a20 = (uint8_t *)(0x5A80);
-            uint8_t *a21 = (uint8_t *)(0x5AA0);
-            for (i = 0; i < 6; i++)   { a20[i] = ATTR_DL_TEXT | BRIGHT; a21[i] = ATTR_DL_TEXT; }
-            for (i = 6; i < 12; i++)  { a20[i] = ATTR_DL_NAME | BRIGHT; a21[i] = ATTR_DL_NAME; }
-            for (i = 12; i < 22; i++) { a20[i] = ATTR_DL_TEXT | BRIGHT; a21[i] = ATTR_DL_TEXT; }
-            for (i = 22; i < 30; i++) { a20[i] = ATTR_DL_BAR_ON | BRIGHT; a21[i] = ATTR_DL_BAR_ON; }
-            for (i = 30; i < 32; i++) { a20[i] = ATTR_DL_TEXT | BRIGHT; a21[i] = ATTR_DL_TEXT; }
+            uint8_t *a = (uint8_t *)(0x5A80);
+            const uint8_t *r = dl_attr_runs;
+            do {
+                uint8_t n = *r++;
+                uint8_t at = *r++;
+                do {
+                    a[0] = at | BRIGHT;
+                    a[32] = at;
+                    a++;
+                } while (--n);
+            } while (a != (uint8_t *)(0x5AA0));
         }
 
         // Draw all 64 chars first time
