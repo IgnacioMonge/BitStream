@@ -219,22 +219,22 @@ static void format_size(uint32_t bytes, char *buf)
 {
     char *p = buf;
     if (bytes >= 1048576UL) {
-        uint32_t whole = bytes >> 20;
+        uint16_t whole = (uint16_t)(bytes >> 20);
         uint32_t rem = bytes & 0xFFFFF;
         uint8_t frac = (uint8_t)(((rem >> 17) * 10) >> 3);
-        p = u32_to_dec(p, whole);
+        p = u16_to_dec(p, whole);
         *p++ = '.';
         *p++ = (char)('0' + frac);
         *p++ = 'M';
         *p++ = 'B';
         *p = 0;
     } else if (bytes >= 1024UL) {
-        p = u32_to_dec(p, bytes >> 10);
+        p = u16_to_dec(p, (uint16_t)(bytes >> 10));
         *p++ = 'K';
         *p++ = 'B';
         *p = 0;
     } else {
-        p = u32_to_dec(p, bytes);
+        p = u16_to_dec(p, (uint16_t)bytes);
         *p++ = 'B';
         *p = 0;
     }

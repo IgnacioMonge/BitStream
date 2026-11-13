@@ -75,7 +75,7 @@ MAP = $(OUTPUT_PATH).map
 EXTRA_CFLAGS  ?=
 BUILD_PROFILE ?= NORMAL
 
-CFLAGS = -vn -O3 -startup=0 -clib=new \
+CFLAGS = -vn -O3 -startup=31 -clib=new \
          -zorg=$(ZORG) --opt-code-size \
          $(UART_FLAG) \
          -custom-copt-rules src/bitstream_copt.rul \

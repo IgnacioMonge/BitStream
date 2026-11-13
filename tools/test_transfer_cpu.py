@@ -59,8 +59,8 @@ def tool(name):
 
 
 class CPU:
-    def __init__(self, variant):
-        base = ROOT / 'build' / ('BitStream_' + variant)
+    def __init__(self, variant, build_dir=None):
+        base = Path(build_dir or ROOT / 'build') / ('BitStream_' + variant)
         self.variant = variant
         self.sym = symbols(base.with_suffix('.map'))
         self.memory = load_tap(base.with_suffix('.tap'))
@@ -108,6 +108,7 @@ entry:
                                 '-counter', '4000000', '-output', str(tmp / 'after.bin'),
                                 str(tmp / 'in.bin')], capture_output=True, text=True, timeout=30)
             assert r.returncode == 0, r.stdout + r.stderr
+            self.cycles = int(re.findall(r'\d+', r.stdout)[-1])
             after = (tmp / 'after.bin').read_bytes()[:65536]
             assert after[RESULT + 4] == 0xA7, 'did not return to harness before cycle limit'
             assert word(after, RESULT + 2) == self.sp, 'unbalanced caller stack'
@@ -403,9 +404,10 @@ mock_recv:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--variant', choices=VARIANTS, action='append', help='default: all four builds')
+    parser.add_argument('--build-dir', type=Path, help='directory containing linked TAP/map snapshots')
     args = parser.parse_args()
     for variant in args.variant or VARIANTS:
-        cpu = CPU(variant)
+        cpu = CPU(variant, args.build_dir)
         test_final_reply(cpu)
         test_close(cpu)
         test_download_close(cpu)

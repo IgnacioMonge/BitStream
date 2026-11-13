@@ -47,6 +47,12 @@ See `docs/audit-2026-10.md` for the full audit.
   their backup across target cleanup
 
 ### Changed
+- The CRT omits unused console streams, reducing TAP size by 3,336 bytes on
+  ESP builds and 3,296 bytes on Spectranext
+- Human-readable size formatting reuses the 16-bit decimal converter,
+  preserving output while reducing CPU work
+- Refreshed README screenshots
+- Build outputs, BPE backups, and Python caches are excluded from version control
 - Transport/storage seam (`include/bitstream_net.h`) with an `+IPD`
   demultiplexer for the ESP backend
 - Local file is created right before RETR (no esxDOS work while data streams)
@@ -69,9 +75,13 @@ See `docs/audit-2026-10.md` for the full audit.
   0 (delete word)
 - `tools/test_asm_cpu.py` (z88dk-ticks) and `tools/e2e_zesarux.py`
   (ZEsarUX + ZXESPEmu + pyftpdlib) test harnesses
+- `tools/winshot.py` for capturing Windows emulator windows
 - `tools/test_transfer_cpu.py`: regression tests against all four compiled Z80
   variants for FTP completion, temporary-file collisions, close failures, and
   Spectranext polling flags, with simulated firmware/transport responses
+- `tools/test_net_close_cpu.py` and `tools/test_optimization_cpu.py`: CPU
+  regressions and measurements for delayed ESP replies after close, size formatting,
+  and CRT initialization, including BSS, stack and frame-clock checks
 
 ## [1.3.0] - 2026-04-20
 
