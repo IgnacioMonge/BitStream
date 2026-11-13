@@ -277,9 +277,12 @@ static void ftp_transfer_abort(int16_t why)
 // Outcome of the final reply after EOF: 0 ok, 1 failed (already reported)
 static uint8_t ftp_transfer_failed(uint16_t code) __z88dk_fastcall
 {
+    if (code == 226 || code == 250) return 0;
     if (code == FTP_LOST || code == 421) { connection_lost(); return 1; }
-    if (code >= 400) { print_reply(S_ERROR_TAG, reply_text); return 1; }
-    return 0;
+    if (code == FTP_CANCEL) { g_user_cancel = 1; fail(S_CANCEL); }
+    else if (!code) fail("Timeout (final reply)");
+    else print_reply(S_ERROR_TAG, reply_text);
+    return 1;
 }
 
 // ============================================================================
@@ -893,7 +896,7 @@ static uint8_t download_file_core(const char *remote, const char *local, uint8_t
         net_data_close();
     }
 
-    fs_close(handle);
+    if (!fs_close(handle)) err = "Close failed";
     if (!err && !fs_commit(local_name)) err = "Commit failed";
 #ifdef BITSTREAM_SELFTEST
     if (err == S_SIZE_FAIL) { fs_commit(local_name); fail(S_SIZE_FAIL); return 0; }  // keep for analysis
@@ -1095,7 +1098,7 @@ static uint8_t list_feed(const uint8_t *b, int16_t n, uint8_t type_mode,
 // after a few pages on hardware). The listing is therefore received into a
 // temporary file first and paged from there. Spectranext sockets have TCP
 // backpressure and the AY UART is RTS-gated: both stream directly.
-static const char S_LIST_TMP[] = "BSLIST.TMP";
+static char list_tmp[13];
 
 // 1: spool complete (data connection closed, final reply not read yet);
 // 0: failed and reported (temp file removed); 2: no storage, stream instead.
@@ -1107,11 +1110,16 @@ static uint8_t list_spool(void)
     uint8_t werr = 0;
 
     if (!fs_available) return 2;
-    handle = fs_create(S_LIST_TMP);
+    safe_copy(list_tmp, "BSLIST.TMP", sizeof(list_tmp));
+    if (!ensure_unique_filename(list_tmp)) {
+        fail("Too many duplicates");
+        return 0;
+    }
+    handle = fs_create(list_tmp);
     if (handle == FS_BAD) return 2;
     if (!ftp_transfer_begin("LIST")) {
         fs_close(handle);
-        fs_remove(S_LIST_TMP);
+        fs_remove(list_tmp);
         return 0;
     }
     drain_mode_fast();
@@ -1127,12 +1135,12 @@ static uint8_t list_spool(void)
     }
     drain_mode_normal();
     if (!werr && n == NET_EOF && pos && fs_write(handle, file_buffer, pos) != pos) werr = 1;
-    fs_close(handle);
+    if (!fs_close(handle)) werr = 1;
     if (!werr && n == NET_EOF) return 1;
-    fs_remove(S_LIST_TMP);
+    fs_remove(list_tmp);
     if (werr) {
         net_data_close();
-        fail("Write error");
+        fail("Write/close error");
     } else {
         ftp_transfer_abort(n);
     }
@@ -1194,7 +1202,7 @@ static void cmd_list_core(const char *a1, const char *a2, const char *a3)
             uint16_t code = ftp_transfer_end();
 
             failed = ftp_transfer_failed(code);
-            handle = fs_open_read(S_LIST_TMP);
+            handle = fs_open_read(list_tmp);
             if (handle != FS_BAD) {
                 uint16_t got;
                 while ((got = fs_read(handle, file_buffer, LIST_CHUNK)) != 0) {
@@ -1203,12 +1211,12 @@ static void cmd_list_core(const char *a1, const char *a2, const char *a3)
                         break;
                     }
                 }
-                fs_close(handle);
+                if (!fs_close(handle)) { fail("Close failed"); failed = 1; }
                 if (!stopped && list_line_pos) list_emit(type_mode, min_size, pattern);
             } else {
                 failed = 1;
             }
-            fs_remove(S_LIST_TMP);
+            fs_remove(list_tmp);
             if (stopped) {
                 g_user_cancel = 1;
                 fail(S_CANCEL);

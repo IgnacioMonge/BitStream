@@ -43,7 +43,7 @@ static uint8_t  fs_init(void);
 static uint8_t  fs_exists(const char *name) __z88dk_fastcall;
 static uint8_t  fs_create(const char *name) __z88dk_fastcall;   // FS_BAD on error
 static uint16_t fs_write(uint8_t h, const void *buf, uint16_t len);
-static void     fs_close(uint8_t h) __z88dk_fastcall;
+static uint8_t  fs_close(uint8_t h) __z88dk_fastcall;   // sync/close: 1 ok
 static void     fs_remove(const char *name) __z88dk_fastcall;
 static uint8_t  fs_commit(const char *name) __z88dk_fastcall;  // persist (1 ok)
 #ifdef HW_UART

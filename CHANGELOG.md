@@ -2,18 +2,23 @@
 
 All notable changes to BitStream are documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 
-## [Unreleased] - audit-2026-10
+## [Unreleased]
 
 See `docs/audit-2026-10.md` for the full audit.
 
 ### Fixed
 - Memory corruption when server text with bytes >= 0x80 (UTF-8 paths) reached
   the BPE expander; expansion is now bounded and server text is folded to ASCII
-- Downloads are verified against `SIZE`; truncated transfers and 4xx/5xx final
-  replies fail and remove the partial file
+- Downloads are verified against `SIZE` when available and require a final
+  `226/250` reply; timeout, cancellation, unexpected replies, and truncated
+  transfers fail and remove the partial file
+- Downloads and spooled listings check filesystem sync/close failures instead
+  of reporting success or committing a file whose close failed
+- Spectranext socket polling tests the raw Z80 Z flag (`0x40`), matching the
+  cartridge driver bridge
 - RETR/LIST errors (425/426/450/451/530/550...) are shown instead of a silent
   timeout; 0-byte files download correctly
 - FTP replies are parsed by code (RFC 959 multi-line aware), never by
@@ -33,10 +38,13 @@ See `docs/audit-2026-10.md` for the full audit.
 - Long multi-line replies (~1 KB, e.g. ftp.gnu.org CWD) could overrun the
   UART FIFO and desynchronise the session; the UART is drained while parsing
   and a half-open frame is resynchronised before the next command
-- Long listings no longer stall in the pager: ESP builds receive the listing
-  into a temporary file (`BSLIST.TMP`) and page it from there
+- Long listings no longer stall in the pager: divMMC/Next builds receive the
+  listing into a free temporary filename before paging it, preserving existing
+  `BSLIST.TMP` files and refusing the operation when all duplicate names are used
 - Static variables were not zeroed at startup (BSS trimmed from the TAP and
   not cleared by the CRT): a warm load inherited stale state
+- BPE builds recover original sources after an interrupted build and retain
+  their backup across target cleanup
 
 ### Changed
 - Transport/storage seam (`include/bitstream_net.h`) with an `+IPD`
@@ -49,16 +57,21 @@ See `docs/audit-2026-10.md` for the full audit.
 - Classic builds run a resident IM2 frame interrupt (NetChessZX): no divMMC
   automap or ROM keyboard scan on every frame
 - Plain lines longer than 64 columns wrap at the last space
-- About 1 KB less code/BSS than 1.3.0 (more stack headroom)
+- Reduced resident code through shared rendering tables and consolidated
+  listing-status formatting
 
 ### Added
 - ZX Spectrum Next build (`make next`): internal UART driver
   (`asm/next_uart.asm`, baud from the video timing), CPU at 28 MHz
 - Spectranext build (`make spectranext SPXN_DIR=...`): cartridge sockets + XFS
+- Spectranext packaging manifests and Next setup documentation
 - Word/line editing: SYMBOL+CAPS SHIFT + 5/8 (word), 7/6 (line start/end),
   0 (delete word)
 - `tools/test_asm_cpu.py` (z88dk-ticks) and `tools/e2e_zesarux.py`
   (ZEsarUX + ZXESPEmu + pyftpdlib) test harnesses
+- `tools/test_transfer_cpu.py`: regression tests against all four compiled Z80
+  variants for FTP completion, temporary-file collisions, close failures, and
+  Spectranext polling flags, with simulated firmware/transport responses
 
 ## [1.3.0] - 2026-04-20
 
@@ -347,7 +360,8 @@ This project uses [Semantic Versioning](https://semver.org/):
 - **MINOR**: New features and significant improvements
 - **PATCH**: Bug fixes only
 
+[Unreleased]: https://github.com/IgnacioMonge/BitStream/compare/v1.3.0...main
 [1.3.0]: https://github.com/IgnacioMonge/BitStream/releases/tag/v1.3.0
 [1.2.0]: https://github.com/IgnacioMonge/BitStream/releases/tag/v1.2.0
-[1.1.0]: https://github.com/IgnacioMonge/BitStream/releases/tag/v1.1.0
-[1.0.0]: https://github.com/IgnacioMonge/BitStream/releases/tag/v1.0.0
+[1.1.0]: https://github.com/IgnacioMonge/BitStream/releases/tag/1.1
+[1.0.0]: https://github.com/IgnacioMonge/BitStream/releases/tag/1.0

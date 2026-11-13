@@ -124,7 +124,7 @@ static uint16_t fs_read(uint8_t h, void *buf, uint16_t len)
 }
 #endif
 
-static void fs_close(uint8_t h) __z88dk_fastcall
+static uint8_t fs_close(uint8_t h) __z88dk_fastcall
 {
     (void)h;
     __asm
@@ -132,9 +132,18 @@ static void fs_close(uint8_t h) __z88dk_fastcall
         push af
         rst 0x08
         defb 0x9C           ; F_SYNC
-        pop af
+        pop bc             ; B = handle; retain the sync result across close
+        push af
+        ld a, b
         rst 0x08
         defb 0x9B           ; F_CLOSE
+        pop bc             ; C = F_SYNC flags
+        ld hl, 0
+        jr c, esx_close_done
+        bit 0, c
+        jr nz, esx_close_done
+        inc l
+    esx_close_done:
     __endasm;
 }
 
@@ -155,5 +164,5 @@ static void fs_remove(const char *name) __z88dk_fastcall
 static uint8_t fs_commit(const char *name) __z88dk_fastcall
 {
     (void)name;
-    return 1;                               // esxDOS writes are durable
+    return 1;                               // fs_close already checked persistence
 }

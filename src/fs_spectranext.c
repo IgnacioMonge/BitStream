@@ -68,10 +68,10 @@ static uint16_t fs_write(uint8_t h, const void *buf, uint16_t len)
     return spxn_regs.bc;
 }
 
-static void fs_close(uint8_t h) __z88dk_fastcall
+static uint8_t fs_close(uint8_t h) __z88dk_fastcall
 {
     spxn_regs.a = h;
-    spxn_rom_hlcall(ROM_VCLOSE);
+    return !(spxn_rom_hlcall(ROM_VCLOSE) & ROM_CARRY);
 }
 
 static void fs_remove(const char *name) __z88dk_fastcall

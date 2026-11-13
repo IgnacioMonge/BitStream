@@ -29,7 +29,7 @@
 
 #define SOCK_STREAM        0x01
 #define ROM_CARRY          0x01     // bridge result: ROM reported an error
-#define ROM_ZERO           0x02     // bridge result: POLLFD idle
+#define ROM_ZERO           0x40     // bridge returns raw F: Z is bit 6
 #define POLLHUP            0x02
 #define POLLIN             0x04
 #define POLLNVAL           0x80
