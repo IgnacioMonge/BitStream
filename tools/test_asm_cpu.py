@@ -345,29 +345,26 @@ scroll_di:
     print(f'PASS scroll_main_zone: geometry exact, IFF={int(enabled)} kept ({cyc} T, uncontended)')
 
 
-# Original LUT-coded font, frozen before the SpecTalkZX packed-row conversion.
-LUT = bytes([0x00, 0x22, 0x44, 0x55, 0x66, 0x88, 0xAA, 0xCC, 0xEE, 0xFF])
-FONT_REFERENCE = bytes.fromhex(
-    '000000555505066000068686285818614756262674250000'
-    '255552522225062826022822000225000800000077112255'
-    '266862272228261258812162566811857117457662811222'
-    '262662266417005005020225012521008080052125261202'
-    '268852266866767667455554766667857558857555265862'
-    '668666822228411162668766555558688866866666266662'
-    '766755266674766766452162822222666668666662668882'
-    '662666666222812258755557552211722227260000000009'
-    '552000071464557667045554114664026854265755466417'
-    '557666207228104162556766555562068866076666026662'
-    '076755046411045555045217282221066668066662068882'
-    '062666066417081258425224222222721227360000999999'
+# SpecTalkZX bow font, with BitStream's solid progress-bar glyph at DEL.
+PACKED_FONT = bytes.fromhex(
+    '000000444404aa00000aeaea0ece6ea2448a4a4ae6448000'
+    '644446c4444c04e4e4044e44000448000e000000cc224488'
+    '4aaaa44c444ee2248ee262ae8aae22e8c22ce8eaaeea2222'
+    'eaeaaeeae2ae00404000404802484200e0e0084248ea6404'
+    '4aee86eaeaaaeacaaeea88aecaaaace8c88ee8c888ea8eae'
+    'aaeaaae4444ee222aeaacaaa8888aeaeaaaaeaaaaaeaaaae'
+    'eae888eaaaeeeaecaae8e2aee44444aaaaaeaaaaa4aaeee4'
+    'aa4aaaaaae2ee2e8ae6444468844226222264a000000000e'
+    '8840000e2eae88eaae0e888e22eaae0eae8e68c8880eae2e'
+    '88eaaa40c44e2022ae88acaa8888860aeaaa0eaaaa0eaaae'
+    '0eae880eae220e88880e8e2e4e44460aaaae0aaaa40aaeee'
+    '0aa4aa0aae2c0e2e8e648446444444c4244c5a0000ffffff'
 )
-PACKED_FONT = bytes((LUT[x >> 4] & 0xF0) | (LUT[x & 15] & 15)
-                    for x in FONT_REFERENCE)
 
 
 def font_rows(ch):
-    b = FONT_REFERENCE[(ch - 32) * 3:(ch - 32) * 3 + 3]
-    return [LUT[n] for x in b for n in (x >> 4, x & 15)]
+    glyph = PACKED_FONT[(ch - 32) * 3:(ch - 31) * 3]
+    return [nibble * 0x11 for byte in glyph for nibble in (byte >> 4, byte & 15)]
 
 
 def test_glyphs_relocated():
@@ -420,7 +417,7 @@ def test_big_glyphs():
             at = screen_addr(row + scan // 8, scan % 8) + col // 2
             want[at] = (want[at] & (mask ^ 0xFF)) | (pixels & mask)
     assert after[0x4000:0x5B00] == want[0x4000:0x5B00], 'double-height glyphs/attributes differ'
-    print('PASS double-height: original 96 glyphs, both nibbles, screen-third boundaries')
+    print('PASS double-height: bow 96 glyphs, both nibbles, screen-third boundaries')
 
 
 def wrap_lines(s):

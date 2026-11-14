@@ -241,7 +241,10 @@ bpe-restore:
 # ------------------------------------------------------------
 build: $(TAP)
 
-$(TAP): $(C_SOURCES) $(ASM_SOURCES) include/bitstream.h include/bitstream_net.h $(wildcard src/*.c)
+src/banner_logo.h: assets/banner_logo.txt tools/banner_logo.py
+	@"$(PYTHON)" tools/banner_logo.py
+
+$(TAP): $(C_SOURCES) $(ASM_SOURCES) include/bitstream.h include/bitstream_net.h src/banner_logo.h $(wildcard src/*.c)
 	$(call STEP,2/3,Build)
 	@echo "Compiling BitStream..."
 	@echo "UART mode: $(UART_DESC)"

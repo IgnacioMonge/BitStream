@@ -6,16 +6,22 @@
 // SCREEN INITIALIZATION
 // ============================================================================
 
+#include "banner_logo.h"
+
 extern void draw_badge_dither(uint8_t count) __z88dk_fastcall;
 static void draw_banner(void)
 {
-    // Identical to SpectalkZX default theme banner
-    // Row 0: BRIGHT, Row 1: dim (gradient effect)
-    clear_line(0, ATTR_BANNER | 0x40);
-    clear_line(1, ATTR_BANNER & 0xBF);
-
-    // Double-height banner text across rows 0-1
-    print_big_str(0, 0, APP_NAME_UPPER " " APP_VERSION " - FTP Client / " UART_INTERFACE);
+    uint8_t row;
+    clear_line(0, ATTR_BANNER);
+    clear_line(1, ATTR_BANNER);
+    for (row = 0; row < BANNER_LOGO_ROWS; ++row) {
+        uint8_t y = row + BANNER_LOGO_Y;
+        memcpy((void *)(0x4000 + ((uint16_t)(y & 7) << 8) + ((uint16_t)(y >> 3) << 5)),
+               banner_logo[row], BANNER_LOGO_BYTES);
+    }
+    // Align the white/cyan boundary to ULA attribute cells.
+    memset((void *)(0x5800 + BANNER_LOGO_ZX_COL), PAPER_BLACK | INK_CYAN | BRIGHT, BANNER_LOGO_ZX_CELLS);
+    memset((void *)(0x5820 + BANNER_LOGO_ZX_COL), PAPER_BLACK | INK_CYAN | BRIGHT, BANNER_LOGO_ZX_CELLS);
 
     // Dithered badge: 5 cells (cols 27-31), SpectalkZX default theme values
     // Row 0: bridge(blk/blk), blk/red, red/yel, yel/grn, grn/blu

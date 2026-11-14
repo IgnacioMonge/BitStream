@@ -51,6 +51,12 @@ See `docs/audit-2026-10.md` for the full audit.
   their backup across target cleanup
 
 ### Changed
+- The application uses SpecTalkZX's `bow` font for all 64-column text, input
+  and double-height status labels; the solid progress-bar glyph is retained
+- The top banner uses a lowercase `bitstreamzx` logo with the bold pixel
+  lettering of BridgeZX, `zx` in cyan and 14-pixel glyphs; a blank scanline
+  separates it from the white rule. Version, FTP description and transport
+  text are removed from the header; the 64-column text font is retained
 - Bounded string copies use callee stack cleanup, saving 63 T-states per call
   and reducing TAP and resident code by 87 bytes on divTiesus/Next and 84 bytes
   on AY/Spectranext
@@ -71,7 +77,7 @@ See `docs/audit-2026-10.md` for the full audit.
 - Scroll preserves the caller's interrupt state, uses unrolled LDI and clears
   the bottom row directly; the caller drains UART first
 - Text rendering uses SpecTalkZX's packed 4px rows and combines character pairs
-  directly, preserving all 96 glyphs and double-height output while removing
+  directly, supporting all 96 glyphs and double-height output while removing
   the glyph LUT and 10 bytes of scratch RAM; blank pairs skip font reads
 - Keyboard scan, key repeat and input-line cell drawing moved to asm
   (SpecTalkZX); text keys auto-repeat
@@ -82,6 +88,12 @@ See `docs/audit-2026-10.md` for the full audit.
   listing-status formatting
 
 ### Added
+- `tools/test_font_cpu.py` verifies the linked `bow` font in normal text, paired
+  lines, input and double-height status labels on all four variants
+- `assets/banner_logo.txt` is the editable logo artwork; `tools/banner_logo.py`
+  packs it without a system font or image library, and the build refreshes the
+  header when the artwork changes. `tools/test_banner_cpu.py` checks the approved
+  bitmap, ULA colours and screen boundaries against all four linked variants
 - ZX Spectrum Next build (`make next`): internal UART driver
   (`asm/next_uart.asm`, baud from the video timing), CPU at 28 MHz
 - Spectranext build (`make spectranext SPXN_DIR=...`): cartridge sockets + XFS

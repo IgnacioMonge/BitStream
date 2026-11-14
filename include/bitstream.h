@@ -11,8 +11,7 @@
 #include <stdint.h>
 
 // --- VERSION ---
-#define APP_NAME         "BitStreamZX"
-#define APP_NAME_UPPER   "BitStreamZX"
+#define APP_NAME         "bitstreamzx"
 #define APP_VERSION      "1.3.0"
 
 #if defined(BITSTREAM_SPECTRANEXT)
