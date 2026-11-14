@@ -47,6 +47,14 @@ See `docs/audit-2026-10.md` for the full audit.
   their backup across target cleanup
 
 ### Changed
+- Bounded string copies use callee stack cleanup, saving 63 T-states per call
+  and reducing TAP and resident code by 87 bytes on divTiesus/Next and 84 bytes
+  on AY/Spectranext
+- Spectranext omits the unused ESP bulk ring reader and its private helpers,
+  saving another 66 bytes without changing the ESP builds
+- Completed ESP transfers skip the five-frame close drain only when the final
+  `226/250` reply and peer `CLOSED` are already confirmed; unfinished transfers,
+  errors, and cancellations retain the original drain
 - The CRT omits unused console streams, reducing TAP size by 3,336 bytes on
   ESP builds and 3,296 bytes on Spectranext
 - Human-readable size formatting reuses the 16-bit decimal converter,
@@ -80,8 +88,10 @@ See `docs/audit-2026-10.md` for the full audit.
   variants for FTP completion, temporary-file collisions, close failures, and
   Spectranext polling flags, with simulated firmware/transport responses
 - `tools/test_net_close_cpu.py` and `tools/test_optimization_cpu.py`: CPU
-  regressions and measurements for delayed ESP replies after close, size formatting,
-  and CRT initialization, including BSS, stack and frame-clock checks
+  regressions and measurements for completed ESP transfers, delayed replies after
+  close/cancellation/errors, size formatting, bounded-copy output and ABI,
+  platform-specific ring-reader linkage, and CRT initialization, including BSS,
+  stack and frame-clock checks
 
 ## [1.3.0] - 2026-04-20
 

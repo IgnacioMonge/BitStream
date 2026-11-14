@@ -751,6 +751,12 @@ static void net_data_close(void)
     wait_poll(5);
 }
 
+// Only after FTP consumed final 226/250; peer CLOSED needs no reply drain.
+#define net_data_finish() do { \
+    if (ev_flags & EV_CLOSED1) dm_discard = 1; \
+    else net_data_close(); \
+} while (0)
+
 // A link-1 frame is partly received: more bytes are due within a byte time
 static uint8_t net_data_midframe(void)
 {

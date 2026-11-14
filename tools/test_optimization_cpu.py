@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Linked-TAP regressions and deterministic measurements for format_size / CRT.
+"""Linked-TAP regressions and deterministic measurements for format_size / st_copy_n / CRT.
 
 No ROM or physical device is emulated. CRT runs from __Start to a mocked _main;
 the incoming BASIC state is SP, IY=$5C3A, IM1, and enabled interrupts. The real
 frame-clock initializer and ISR run, but the ISR is explicitly called: external
 interrupt delivery, contention, firmware and full application boot are untested.
-Format batches and the 128-call timing fixture use identical harness overhead
-for every snapshot. Reported T-states include this fixed harness overhead.
+Format and copy batches use identical harness overhead for every snapshot;
+copy fixtures differ only in the argument-cleanup instructions required by ABI. Reported T-states include this fixed harness overhead.
 """
 import argparse
 from pathlib import Path
@@ -102,6 +102,99 @@ def test_format(cpu):
           f'128-call fixture={cycles} T (fixed harness included)')
 
 
+def copy_batch(cpu, source, limits, abi):
+    source_at, table, slot = 0x4800, 0x4A00, 258
+    assert len(limits) <= 8, 'copy outputs must end before the harness at $5B00'
+    cleanup = '    pop bc\n' * 3 if abi == 'caller' else ''
+    body = f'''    ld ix, 0xB16B
+    ld iy, 0x5C3A
+    ld hl, {table}
+    ld ({STATE}), hl
+    ld a, {len(limits)}
+    ld ({STATE + 2}), a
+copy_loop:
+    ld hl, ({STATE})
+    ld e, (hl)
+    inc hl
+    ld d, (hl)
+    inc hl
+    push de
+    ld de, {source_at}
+    push de
+    ld e, (hl)
+    inc hl
+    ld d, 0
+    push de
+    ld ({STATE}), hl
+    call _st_copy_n
+{cleanup}    push ix
+    pop hl
+    ld de, 0xB16B
+    or a
+    sbc hl, de
+    jp nz, copy_bad_abi
+    push iy
+    pop hl
+    ld de, 0x5C3A
+    or a
+    sbc hl, de
+    jp nz, copy_bad_abi
+    ld hl, 0
+    add hl, sp
+    ld de, {cpu.sp}
+    or a
+    sbc hl, de
+    jp nz, copy_bad_abi
+    ld a, ({STATE + 2})
+    dec a
+    ld ({STATE + 2}), a
+    jp nz, copy_loop
+    jp copy_done
+copy_bad_abi:
+    ld a, 1
+    ld ({STATE + 3}), a
+copy_done:
+'''
+
+    def setup(mem):
+        mem[source_at - 1:source_at + len(source) + 2] = b'\xD7' + source + b'\0\xD7'
+        encoded = b''.join((OUTPUT + index * slot + 1).to_bytes(2, 'little') +
+                           bytes((limit,)) for index, limit in enumerate(limits))
+        mem[table:table + len(encoded)] = encoded
+        mem[OUTPUT:OUTPUT + len(limits) * slot] = b'\xA5' * (len(limits) * slot)
+        mem[STATE + 3] = 0
+
+    after = cpu.run(body, setup=setup)
+    assert after[STATE + 3] == 0, 'st_copy_n must preserve IX/IY and balance SP per call'
+    assert after[source_at - 1:source_at + len(source) + 2] == \
+        b'\xD7' + source + b'\0\xD7', 'copy source/guards changed'
+    for index, limit in enumerate(limits):
+        at = OUTPUT + index * slot
+        expected = source[:limit - 1] + b'\0' if limit else b''
+        assert after[at] == 0xA5, f'copy max={limit}: leading output guard'
+        assert after[at + 1:at + 1 + len(expected)] == expected, \
+            f'copy max={limit}, source length={len(source)}: output/NUL'
+        assert after[at + 1 + len(expected):at + slot] == \
+            b'\xA5' * (slot - 1 - len(expected)), f'copy max={limit}: trailing output guard'
+    return cpu.cycles
+
+
+def test_copy(cpu, abi):
+    if abi == 'callee':
+        for name in ('_rb_read_block', 'rbr_min', 'rbr_zero'):
+            assert (name in cpu.sym) == (cpu.variant != 'Spectranext'), \
+                f'{cpu.variant}: unexpected ring-reader symbol availability: {name}'
+    limits = (0, 1, 2, 3, 4, 12, 13, 48, 127, 255)
+    sources = (b'', b'abc', bytes(65 + i % 26 for i in range(300)))
+    cycles = 0
+    for source in sources:
+        for start in range(0, len(limits), 8):
+            cycles += copy_batch(cpu, source, limits[start:start + 8], abi)
+    print(f'PASS {cpu.variant}: st_copy_n {len(sources) * len(limits)} cases; '
+          f'empty/short/long sources, output/NUL/guards, IX/IY/SP; '
+          f'30-call fixture={cycles} T ({abi}-cleaned; fixed harness included)')
+
+
 def snapshot(prefix, offset):
     return f'''    ld ({STATE + offset}), sp
     ld ({STATE + offset + 2}), iy
@@ -195,12 +288,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build-dir', type=Path, default=ROOT / 'build')
     parser.add_argument('--variant', choices=VARIANTS, action='append')
-    parser.add_argument('--only', choices=('format', 'crt', 'all'), default='all')
+    parser.add_argument('--only', choices=('format', 'copy', 'crt', 'all'), default='all')
+    parser.add_argument('--copy-abi', choices=('callee', 'caller'), default='callee',
+                        help='caller is only for measuring the frozen pre-change build')
     args = parser.parse_args()
     for variant in args.variant or VARIANTS:
         cpu = CPU(variant, args.build_dir)
         if args.only in ('format', 'all'):
             test_format(cpu)
+        if args.only in ('copy', 'all'):
+            test_copy(cpu, args.copy_abi)
         if args.only in ('crt', 'all'):
             test_crt(cpu)
     print('ALL OPTIMIZATION CPU TESTS PASSED (mocked main; no full boot/hardware proof)')

@@ -197,7 +197,7 @@ static const char S_SLASH[] = "/";
 static const char S_LIST_HDR[] = "T      Size Filename";
 
 // st_copy_n is in asm/bitstream_asm.asm
-extern void st_copy_n(char *dst, const char *src, uint8_t max_len);
+extern void st_copy_n(char *dst, const char *src, uint8_t max_len) __z88dk_callee;
 #define safe_copy(dst, src, sz) st_copy_n((dst), (src), (uint8_t)(sz))
 
 // ============================================================================

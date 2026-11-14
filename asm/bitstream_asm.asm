@@ -19,7 +19,9 @@ PUBLIC _clear_zone
 PUBLIC _scroll_main_zone
 PUBLIC _rb_pop
 PUBLIC _try_read_line_nodrain
+IFNDEF BITSTREAM_SPECTRANEXT
 PUBLIC _rb_read_block
+ENDIF
 PUBLIC _cache_row_y
 PUBLIC _parse_decimal
 PUBLIC _st_copy_n
@@ -139,6 +141,7 @@ rbp_has_data:
     ld (_rb_tail), de
     ret
 
+IFNDEF BITSTREAM_SPECTRANEXT
 ; -----------------------------------------------------------------------------
 ; uint16_t rb_read_block(uint8_t *dst, uint16_t max) __z88dk_callee
 ; Copies min(max, bytes buffered, bytes before the ring wraps) from the ring
@@ -194,6 +197,8 @@ rbr_min:
     ld b, h
     ld c, l
     ret
+
+ENDIF
 
 ; -----------------------------------------------------------------------------
 ; uint8_t try_read_line_nodrain(void)
@@ -671,19 +676,16 @@ pd_done:
     ret
 
 ; -----------------------------------------------------------------------------
-; void st_copy_n(char *dst, const char *src, uint8_t max_len)
-; sccz80 cdecl: SP+2=max_len, SP+4=src, SP+6=dst
-; Copies up to max_len-1 chars, always NUL-terminates.
+; void st_copy_n(char *dst, const char *src, uint8_t max_len) __z88dk_callee
+; sccz80 callee: SP+2=max_len, SP+4=src, SP+6=dst
+; Copies up to max_len-1 chars and NUL-terminates; max_len=0 writes nothing.
 ; -----------------------------------------------------------------------------
 _st_copy_n:
     pop af              ; Return address
     pop bc              ; max_len (C = byte)
     pop hl              ; src
     pop de              ; dst
-    push de
-    push hl
-    push bc
-    push af             ; Restore stack + return addr
+    push af             ; Restore return address; arguments consumed
 
     ld a, c
     or a

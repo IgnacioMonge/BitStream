@@ -109,7 +109,8 @@ def run(cpu, body, ring=b'', feed=b'', delay=0, extra_mocks='', extra_patches=No
     def setup(mem):
         # Keep the parser/wait loops intact, replacing their hardware timing seam.
         for first, last in (('_ftp_wait_reply', '_ftp_command'),
-                            ('_esp_wait_ev', '_esp_wait_prompt')):
+                            ('_esp_wait_ev', '_esp_wait_prompt'),
+                            ('_ftp_xfer_read', '_ftp_transfer_end')):
             start, end = cpu.sym[first], cpu.sym[last]
             assert start < end, f'unexpected function order: {first}/{last}'
             count = 0
@@ -126,6 +127,7 @@ def run(cpu, body, ring=b'', feed=b'', delay=0, extra_mocks='', extra_patches=No
         put_word(mem, PTR, FEED)
         put_word(mem, LEFT, 0)  # The harness enables RX after its initial poll.
         mem[DELAY] = delay
+        mem[cpu.sp - 512:cpu.sp] = bytes([0xD3]) * 512
     return cpu.run(body, MOCKS + extra_mocks, {**PATCHES, **(extra_patches or {})}, setup)
 
 
@@ -140,7 +142,9 @@ def assert_drained(cpu, mem):
 
 
 def report(cpu, case, mem):
-    print(f'PASS {cpu.variant} {case}: scheduled_wait_frames={word(mem, WAIT)} '
+    used = next((cpu.sp - pos for pos in range(cpu.sp - 512, cpu.sp)
+                 if mem[pos] != 0xD3), 0)
+    print(f'PASS {cpu.variant} {case}: stack_bytes={used} scheduled_wait_frames={word(mem, WAIT)} '
           f'cpu_cycles={cpu.cycles} uart_drains={word(mem, DRAINS)}')
 
 
@@ -185,6 +189,62 @@ def test_fragmented_final(cpu, expected_wait):
         report(cpu, f'delayed-bytewise-{code}', mem)
 
 
+def test_consumed_final(cpu, expected_finished_wait):
+    for code in (226, 250):
+        final = f'{code} complete\r\n'.encode()
+        # Real caller lifecycle: consume data, then stop at the FIRST EOF.
+        # The fragmented final precedes CLOSED; idle reader HALTs use the seam.
+        ring = ipd(1, b'DATA') + ipd(0, final)[:-5]
+        feed = final[-5:] + b'1,CLOSED\r\n'
+        body = '    call _net_poll\n' + enable_feed(feed) + 'read_final:\n'
+        body += call_stack('_ftp_xfer_read', (OUTPUT, 4))
+        body += f'''    ld ({RESULT + 6}), hl
+    bit 7, h
+    jr nz, first_eof
+    ld a, h
+    or l
+    jr z, read_final
+    ld de, ({RESULT + 10})
+    add hl, de
+    ld ({RESULT + 10}), hl
+    jr read_final
+first_eof:
+    ld hl, (_xfer_code)
+    ld ({RESULT + 8}), hl
+    call _ftp_transfer_end
+    ld ({RESULT}), hl
+'''
+        mem = run(cpu, body, ring, feed, delay=8)
+        assert word(mem, RESULT + 6) == 65535, 'caller must stop at first NET_EOF'
+        assert word(mem, RESULT + 8) == code, 'final already cached at first EOF'
+        assert word(mem, RESULT + 10) == 4 and mem[OUTPUT:OUTPUT + 4] == b'DATA'
+        assert word(mem, RESULT) == code and word(mem, cpu.sym['_xfer_code']) == code
+        assert word(mem, WAIT) == expected_finished_wait and mem[TX] == 0
+        assert word(mem, LEFT) == 0 and word(mem, KEYS) > 0
+        assert_drained(cpu, mem)
+        report(cpu, f'consumed-bytewise-{code}', mem)
+
+
+def test_finish_code_gate(cpu, expected_wait, expected_finished_wait):
+    # Include pseudo-codes and non-transfer successes: only 226/250 qualify.
+    for code in (0, 1, 200, 226, 250, 426):
+        for closed in (False, True):
+            ring = (b'1,CLOSED\r\n' if closed else b'') + b'OK\r\n'
+            body = f'''    call _net_poll
+    ld hl, {code}
+    ld (_xfer_code), hl
+    call _ftp_transfer_end
+    ld ({RESULT}), hl
+'''
+            mem = run(cpu, body, ring)
+            assert word(mem, RESULT) == code
+            fast = closed and code in (226, 250)
+            assert word(mem, WAIT) == (expected_finished_wait if fast else expected_wait)
+            assert mem[TX] == (0 if closed else 2), 'open socket must actively close'
+            assert_drained(cpu, mem)
+            report(cpu, f'cached-{code}-' + ('CLOSED' if closed else 'open'), mem)
+
+
 def inject(stream, label):
     # Run-time fixture delivery between calls; actual framing remains untouched.
     body = f'''    ld hl, {label}
@@ -200,7 +260,7 @@ def inject(stream, label):
     return body, data
 
 
-def test_cancel_reopen(cpu, expected_wait):
+def test_cancel_reopen(cpu, expected_wait, expected_finished_wait):
     connect, connect_data = inject(b'1,CONNECT\r\nOK\r\n', 'connect_stream')
     next_stream = ipd(1, b'NEW!') + b'1,CLOSED\r\n' + ipd(0, b'250 complete\r\n')
     receive, receive_data = inject(next_stream, 'receive_stream')
@@ -226,13 +286,13 @@ def test_cancel_reopen(cpu, expected_wait):
     assert word(mem, RESULT + 6) == 1, 'reopen data connection'
     assert word(mem, RESULT + 8) == 4 and mem[OUTPUT:OUTPUT + 4] == b'NEW!', 'reopened link accepts data'
     assert word(mem, RESULT + 10) == 65535 and word(mem, RESULT) == 250, 'new transfer EOF/final reply'
-    assert word(mem, WAIT) == 2 * expected_wait and mem[TX] == 2
+    assert word(mem, WAIT) == expected_wait + expected_finished_wait and mem[TX] == 2
     assert_drained(cpu, mem)
     report(cpu, 'cancel-discard-reopen-next-data', mem)
 
 
 
-def test_late_final_before_next_command(cpu, expected_wait):
+def test_late_final_before_next_command(cpu, expected_wait, abort=None):
     # A bounded transport probe: a previous 250 arrives on the second poll
     # after close, while the real next command has its own delayed 200 reply.
     old = ipd(0, b'250 old complete\r\n')
@@ -321,7 +381,11 @@ probe_genuine_bytes:
     defb {','.join(str(b) for b in genuine)}
 '''
     body = '    call _net_poll\n' + enable_feed(old)
-    body += '    call _net_data_close\n'
+    if abort is None:
+        body += '    call _net_data_close\n'
+    else:
+        body += '    ld hl, 426\n    ld (_xfer_code), hl\n'
+        body += call_stack('_ftp_transfer_abort', (65536 + abort,))
     body += call_stack('_ftp_cmd_reply', ('probe_command', 10))
     body += f'''    ld ({RESULT}), hl
     jp probe_fixture_end
@@ -334,7 +398,7 @@ probe_fixture_end:
                '_key_break_down': 'probe_key'}
     mem = run(cpu, body, b'1,CLOSED\r\n', delay=1,
               extra_mocks=mocks, extra_patches=patches)
-    print(f'PROBE {cpu.variant}: next_reply={word(mem, RESULT)} '
+    print(f'PROBE {cpu.variant} abort={abort}: next_reply={word(mem, RESULT)} '
           f'expected=200 scheduled_wait_frames={word(mem, WAIT)} '
           f'cpu_cycles={cpu.cycles} genuine_reply_pending={mem[pending]}')
     assert word(mem, WAIT) == expected_wait
@@ -347,18 +411,23 @@ def main():
     parser.add_argument('--probe-late-final', action='store_true', help='run only the bounded late-250 next-command probe')
     parser.add_argument('--build-dir', type=Path, help='directory containing linked TAP/map snapshots')
     parser.add_argument('--variant', choices=VARIANTS, action='append', help='default: classic ESP builds')
+    parser.add_argument('--expect-finished-wait', type=int, choices=(0, 5), default=0)
     parser.add_argument('--expect-closed-wait', type=int, choices=(0, 5), default=5)
     args = parser.parse_args()
     for variant in args.variant or VARIANTS:
         cpu = CPU(variant, args.build_dir)
         if args.probe_late_final:
-            test_late_final_before_next_command(cpu, args.expect_closed_wait)
+            for abort in (None, -2, -3):
+                test_late_final_before_next_command(cpu, args.expect_closed_wait, abort)
             continue
         test_closed(cpu, args.expect_closed_wait)
         test_open_and_failed_close(cpu)
         test_fragmented_final(cpu, args.expect_closed_wait)
-        test_cancel_reopen(cpu, args.expect_closed_wait)
-        test_late_final_before_next_command(cpu, args.expect_closed_wait)
+        test_consumed_final(cpu, args.expect_finished_wait)
+        test_finish_code_gate(cpu, args.expect_closed_wait, args.expect_finished_wait)
+        test_cancel_reopen(cpu, args.expect_closed_wait, args.expect_finished_wait)
+        for abort in (None, -2, -3):
+            test_late_final_before_next_command(cpu, args.expect_closed_wait, abort)
     print('ALL ESP CLOSE CPU TESTS PASSED (hardware timing excluded; Spectranext uses another backend)')
 
 

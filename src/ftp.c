@@ -251,6 +251,10 @@ static int16_t ftp_xfer_read(uint8_t *buf, uint16_t max)
 // Close the data connection and collect the final reply (226/250 or error).
 static uint16_t ftp_transfer_end(void)
 {
+#ifndef BITSTREAM_SPECTRANEXT
+    if (xfer_code == 226 || xfer_code == 250) net_data_finish();
+    else
+#endif
     net_data_close();
     if (!xfer_code) xfer_code = ftp_wait_reply(150, 1);
     return xfer_code;
