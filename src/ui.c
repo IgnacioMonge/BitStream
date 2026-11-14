@@ -175,7 +175,7 @@ extern void clear_line(uint8_t y, uint8_t attr);
 extern void clear_zone(uint8_t start, uint8_t lines, uint8_t attr);
 
 
-// scroll_main_zone is in asm/bitstream_asm.asm (includes DI/EI for artifact-free scroll)
+// scroll_main_zone is in asm/bitstream_asm.asm (preserves the caller's interrupt state)
 extern void scroll_main_zone(void);
 
 // ============================================================================

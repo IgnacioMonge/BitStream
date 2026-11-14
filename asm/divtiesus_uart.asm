@@ -239,8 +239,8 @@ _ay_uart_read:
 ; Moves up to min(uart_drain_limit (0 = 255), ring free) bytes from the UART
 ; into ring_buffer. After the first byte it keeps polling for ~1.3 byte times
 ; before declaring the line idle, so back-to-back bytes are not split across
-; calls. Uses the shadow set for the ring pointer (nothing else keeps state
-; there; unpack_glyph reloads it on every call).
+; calls. Uses the shadow set for the ring pointer; the frame ISR does not
+; touch it and no other routine keeps persistent state there.
 ; -----------------------------------------------------------------------------
 _uart_drain_to_buffer:
     ld hl, (_rb_tail)

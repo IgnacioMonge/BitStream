@@ -17,7 +17,7 @@ char rx_line[128];
 uint8_t rx_pos;
 uint8_t rx_overflow;
 
-// TX fail-stop latch (set by the divMMC UART driver, cleared by ay_uart_init)
+// UART fail-stop latch: TX timeout or Next RX error; cleared by ay_uart_init.
 uint8_t uart_tx_failed;
 
 uint8_t uart_drain_limit = DRAIN_NORMAL;

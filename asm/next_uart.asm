@@ -13,8 +13,9 @@
 ;   $153B  UART select ($30 = ESP, prescaler bits 14..16 = 0)
 ;   $163B  frame format ($98 reset + 8N1, then $18 = 8N1)
 ; With BC = $133B the RX/baud port is just "inc b".
-; The status error flags (framing/overflow, clear-on-read) are not used: a
-; lost byte surfaces as a protocol error or a SIZE mismatch upstream.
+; Every status read checks break/framing/overflow flags (SpecTalkZX). FTP
+; payloads are binary, so a gap fails the transport until !INIT instead of
+; inserting IRC's NUL marker or trying to resume a damaged +IPD frame.
 ;
 ; Also: _next_platform_init sets the CPU to 28 MHz. Polling bounds below are
 ; sized for 28 MHz and stay safe (only longer) at 3.5 MHz.
@@ -31,6 +32,7 @@ PUBLIC _ay_uart_ready_fast
 PUBLIC _uart_drain_to_buffer
 PUBLIC _uart_send_string
 PUBLIC _next_platform_init
+PUBLIC _next_uart_status
 IFDEF BITSTREAM_DEBUG_RX
 PUBLIC _uart_dbg_status         ; OR of every drain status sample
 PUBLIC _uart_dbg_bytes          ; bytes the drain read from the UART
@@ -55,7 +57,7 @@ NEXTREG_SELECT       EQU 0x243B
 NEXTREG_CPU_SPEED    EQU 0x07
 NEXTREG_VIDEO_TIMING EQU 0x11
 RING_SIZE            EQU 2048
-DRAIN_TAIL_POLLS     EQU 80     ; ~1.3 byte times at 115200 baud, 28 MHz
+DRAIN_TAIL_POLLS     EQU 24     ; > one byte time at 115200 baud, 28 MHz
 
 ; -----------------------------------------------------------------------------
 ; void next_platform_init(void) - CPU at 28 MHz (nextreg $07 = 3).
@@ -75,11 +77,34 @@ _next_platform_init:
 ; -----------------------------------------------------------------------------
 uartRead:
     ld bc, UART_STATUS
-    in a, (c)
+    call _next_uart_status
     rrca                    ; RX ready -> CF
     ret nc
     inc b
     in a, (c)
+    ret
+
+; BC=$133B. Preserve BC/DE/HL and latch clear-on-read error bits at every
+; access: https://wiki.specnext.dev/UART_TX (bits 7/6/5/2).
+; Failed/latched: CF=1, RX hidden and TX full; no more payload is consumed.
+_next_uart_status:
+    ld a, (_uart_tx_failed)
+    or a
+    jr nz, ns_failed
+    in a, (c)
+    push af
+    and 0xE4
+    jr nz, ns_fault
+    pop af
+    or a
+    ret
+ns_fault:
+    pop af
+    ld a, 1
+    ld (_uart_tx_failed), a
+ns_failed:
+    ld a, 2
+    scf
     ret
 
 ; -----------------------------------------------------------------------------
@@ -133,7 +158,7 @@ baud_115200:
 ; -----------------------------------------------------------------------------
 ; uint8_t ay_uart_send(uint8_t byte) __z88dk_fastcall      L = byte
 ; Returns L=0 (CF=0) when sent, L=1 (CF=1) when failed or latched.
-; Budget: 65536 status samples (~0.15 s at 28 MHz, ~1 s at 3.5 MHz).
+; Budget: 65536 status samples; RX errors fail immediately.
 ; -----------------------------------------------------------------------------
 _ay_uart_send:
     ld a, (_uart_tx_failed)
@@ -142,7 +167,8 @@ _ay_uart_send:
     ld de, 0
     ld bc, UART_STATUS
 us_poll:
-    in a, (c)
+    call _next_uart_status
+    jr c, us_failed
     bit 1, a
     jr z, us_ready          ; TX FIFO has room
     rrca                    ; RX ready -> CF
@@ -239,7 +265,7 @@ _uart_send_string:
 _ay_uart_ready:
 _ay_uart_ready_fast:
     ld bc, UART_STATUS
-    in a, (c)
+    call _next_uart_status
     and 1
     ld l, a
     ld h, 0
@@ -301,7 +327,7 @@ dr_have:
     ld e, 0                 ; E = moved at least one byte
     ld bc, UART_STATUS
 dr_poll:
-    in a, (c)
+    call _next_uart_status
 IFDEF BITSTREAM_DEBUG_RX
     push af
     push hl
@@ -348,7 +374,7 @@ dr_empty:
     ret z                   ; nothing moved: head unchanged
     ld l, DRAIN_TAIL_POLLS
 dr_wait:
-    in a, (c)
+    call _next_uart_status
 IFDEF BITSTREAM_DEBUG_RX
     push af
     push hl

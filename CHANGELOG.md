@@ -26,7 +26,11 @@ See `docs/audit-2026-10.md` for the full audit.
 - CIPSEND prompt wait no longer discards socket data nor abandons a send on BREAK
 - divMMC UART: no silent byte drops on TX (fail-stop latch), RX drained during TX,
   ~3x faster RX drain
-- Garbled text when the glyph LUT crossed a page boundary
+- Next UART: break, framing and overflow flags are checked on every status read;
+  a lost RX byte fails the session until `!INIT`, rejecting queued payload and
+  stale completion replies instead of risking a corrupt binary download
+- Garbled text when the glyph LUT crossed a page boundary; rendering now uses
+  packed row patterns without a lookup table
 - `utf8_to_ascii` no longer eats bytes after a Latin-1 character
 - Progress bar for files above 1 MB
 - PASV replies with an unroutable (NAT) address connect to the control host
@@ -64,8 +68,11 @@ See `docs/audit-2026-10.md` for the full audit.
 - Transport/storage seam (`include/bitstream_net.h`) with an `+IPD`
   demultiplexer for the ESP backend
 - Local file is created right before RETR (no esxDOS work while data streams)
-- Scroll runs with interrupts enabled, unrolled LDI, UART drained first
-- `print_line64_fast` skips glyph unpacking for blank pairs
+- Scroll preserves the caller's interrupt state, uses unrolled LDI and clears
+  the bottom row directly; the caller drains UART first
+- Text rendering uses SpecTalkZX's packed 4px rows and combines character pairs
+  directly, preserving all 96 glyphs and double-height output while removing
+  the glyph LUT and 10 bytes of scratch RAM; blank pairs skip font reads
 - Keyboard scan, key repeat and input-line cell drawing moved to asm
   (SpecTalkZX); text keys auto-repeat
 - Classic builds run a resident IM2 frame interrupt (NetChessZX): no divMMC
@@ -92,6 +99,9 @@ See `docs/audit-2026-10.md` for the full audit.
   close/cancellation/errors, size formatting, bounded-copy output and ABI,
   platform-specific ring-reader linkage, and CRT initialization, including BSS,
   stack and frame-clock checks
+- `tools/test_uart_cpu.py`: actual divTiesus/Next driver opcodes with simulated
+  port I/O, covering binary data, ring limits/wrap, TX timeout, RX faults,
+  reinitialization, ABI/interrupt state and linked FTP loss propagation
 
 ## [1.3.0] - 2026-04-20
 

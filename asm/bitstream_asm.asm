@@ -614,11 +614,25 @@ smz_scanline_loop:
     ld bc, 480
     call smz_copy16n
 
-    ; Clear last line (row 18) pixels + attributes
+    ; Clear row 18 directly; keep the real stack and the caller's IFF.
+    xor a
+    ld hl, 0x5040
+smz_clear_px:
+    call smz_fill32
+    inc h
+    ld l, 0x40
+    bit 3, h
+    jr z, smz_clear_px
+    ld hl, 0x5A40
     ld a, (_current_attr)
-    ld c, a
-    ld a, 18                ; MAIN_END
-    jp cli_internal
+smz_fill32:
+    ld (hl), a
+    ld d, h
+    ld e, l
+    inc de
+    ld bc, 31
+    ldir
+    ret
 
 ; -----------------------------------------------------------------------------
 ; uint16_t parse_decimal(char **pp)
@@ -718,8 +732,6 @@ _g_ps64_y:    defs 1
 _g_ps64_col:  defs 1
 _g_ps64_attr: defs 1
 glyph_buffer: defs 8
-plf_left_buf: defs 8    ; Buffer para nibbles izquierdos (print_line64_fast)
-plf_str_ptr:  defs 2    ; String pointer temporal (print_line64_fast)
 plf_attr_val: defs 1    ; Atributo a escribir (print_line64_fast)
 plf_y_val:    defs 1    ; Fila Y (print_line64_fast)
 cache_scr_base: defs 2  ; Screen base addr cacheada
@@ -734,112 +746,105 @@ bpe_rsp:       defs 2   ; Current position in bpe_rstack
 
 SECTION code_user
 
-; LUT: 4-bit index -> 8-bit expanded pattern (both nibbles filled).
-; Not aligned: z80asm's ALIGN is relative to the module's section start, not
-; absolute, so the old "ALIGN 16, no carry" add broke whenever the linker put
-; the table at $xxF7..$xxFF (it did in the Spectranext build: $CCFE). The
-; lookup below carries into the high byte.
-font_lut:
-    defb 0x00, 0x22, 0x44, 0x55, 0x66, 0x88, 0xAA, 0xCC, 0xEE, 0xFF
-
-; Compressed font: 96 chars * 3 bytes = 288 bytes (vs 768 uncompressed)
+; Actual 4px rows, two per byte: no lookup table or page-alignment contract.
+; SpecTalkZX packed-row format; all 96 original BitStream glyphs are preserved.
 font64_packed:
     defb 0x00, 0x00, 0x00  ; ' ' (32)
-    defb 0x55, 0x55, 0x05  ; '!' (33)
-    defb 0x06, 0x60, 0x00  ; '"' (34)
-    defb 0x06, 0x86, 0x86  ; '#' (35)
-    defb 0x28, 0x58, 0x18  ; '$' (36)
-    defb 0x61, 0x47, 0x56  ; '%' (37)
-    defb 0x26, 0x26, 0x74  ; '&' (38)
-    defb 0x25, 0x00, 0x00  ; ''' (39)
-    defb 0x25, 0x55, 0x52  ; '(' (40)
-    defb 0x52, 0x22, 0x25  ; ')' (41)
-    defb 0x06, 0x28, 0x26  ; '*' (42)
-    defb 0x02, 0x28, 0x22  ; '+' (43)
-    defb 0x00, 0x02, 0x25  ; ',' (44)
-    defb 0x00, 0x08, 0x00  ; '-' (45)
-    defb 0x00, 0x00, 0x77  ; '.' (46)
-    defb 0x11, 0x22, 0x55  ; '/' (47)
-    defb 0x26, 0x68, 0x62  ; '0' (48)
-    defb 0x27, 0x22, 0x28  ; '1' (49)
-    defb 0x26, 0x12, 0x58  ; '2' (50)
-    defb 0x81, 0x21, 0x62  ; '3' (51)
-    defb 0x56, 0x68, 0x11  ; '4' (52)
-    defb 0x85, 0x71, 0x17  ; '5' (53)
-    defb 0x45, 0x76, 0x62  ; '6' (54)
-    defb 0x81, 0x12, 0x22  ; '7' (55)
-    defb 0x26, 0x26, 0x62  ; '8' (56)
-    defb 0x26, 0x64, 0x17  ; '9' (57)
-    defb 0x00, 0x50, 0x05  ; ':' (58)
-    defb 0x02, 0x02, 0x25  ; ';' (59)
-    defb 0x01, 0x25, 0x21  ; '<' (60)
-    defb 0x00, 0x80, 0x80  ; '=' (61)
-    defb 0x05, 0x21, 0x25  ; '>' (62)
-    defb 0x26, 0x12, 0x02  ; '?' (63)
-    defb 0x26, 0x88, 0x52  ; '@' (64)
-    defb 0x26, 0x68, 0x66  ; 'A' (65)
-    defb 0x76, 0x76, 0x67  ; 'B' (66)
-    defb 0x45, 0x55, 0x54  ; 'C' (67)
-    defb 0x76, 0x66, 0x67  ; 'D' (68)
-    defb 0x85, 0x75, 0x58  ; 'E' (69)
-    defb 0x85, 0x75, 0x55  ; 'F' (70)
-    defb 0x26, 0x58, 0x62  ; 'G' (71)
-    defb 0x66, 0x86, 0x66  ; 'H' (72)
-    defb 0x82, 0x22, 0x28  ; 'I' (73)
-    defb 0x41, 0x11, 0x62  ; 'J' (74)
-    defb 0x66, 0x87, 0x66  ; 'K' (75)
-    defb 0x55, 0x55, 0x58  ; 'L' (76)
-    defb 0x68, 0x88, 0x66  ; 'M' (77)
-    defb 0x86, 0x66, 0x66  ; 'N' (78)
-    defb 0x26, 0x66, 0x62  ; 'O' (79)
-    defb 0x76, 0x67, 0x55  ; 'P' (80)
-    defb 0x26, 0x66, 0x74  ; 'Q' (81)
-    defb 0x76, 0x67, 0x66  ; 'R' (82)
-    defb 0x45, 0x21, 0x62  ; 'S' (83)
-    defb 0x82, 0x22, 0x22  ; 'T' (84)
-    defb 0x66, 0x66, 0x68  ; 'U' (85)
-    defb 0x66, 0x66, 0x62  ; 'V' (86)
-    defb 0x66, 0x88, 0x82  ; 'W' (87)
-    defb 0x66, 0x26, 0x66  ; 'X' (88)
-    defb 0x66, 0x62, 0x22  ; 'Y' (89)
-    defb 0x81, 0x22, 0x58  ; 'Z' (90)
-    defb 0x75, 0x55, 0x57  ; '[' (91)
-    defb 0x55, 0x22, 0x11  ; '\' (92)
-    defb 0x72, 0x22, 0x27  ; ']' (93)
-    defb 0x26, 0x00, 0x00  ; '^' (94)
-    defb 0x00, 0x00, 0x09  ; '_' (95)
-    defb 0x55, 0x20, 0x00  ; '`' (96)
-    defb 0x07, 0x14, 0x64  ; 'a' (97)
-    defb 0x55, 0x76, 0x67  ; 'b' (98)
-    defb 0x04, 0x55, 0x54  ; 'c' (99)
-    defb 0x11, 0x46, 0x64  ; 'd' (100)
-    defb 0x02, 0x68, 0x54  ; 'e' (101)
-    defb 0x26, 0x57, 0x55  ; 'f' (102)
-    defb 0x46, 0x64, 0x17  ; 'g' (103)
-    defb 0x55, 0x76, 0x66  ; 'h' (104)
-    defb 0x20, 0x72, 0x28  ; 'i' (105)
-    defb 0x10, 0x41, 0x62  ; 'j' (106)
-    defb 0x55, 0x67, 0x66  ; 'k' (107)
-    defb 0x55, 0x55, 0x62  ; 'l' (108)
-    defb 0x06, 0x88, 0x66  ; 'm' (109)
-    defb 0x07, 0x66, 0x66  ; 'n' (110)
-    defb 0x02, 0x66, 0x62  ; 'o' (111)
-    defb 0x07, 0x67, 0x55  ; 'p' (112)
-    defb 0x04, 0x64, 0x11  ; 'q' (113)
-    defb 0x04, 0x55, 0x55  ; 'r' (114)
-    defb 0x04, 0x52, 0x17  ; 's' (115)
-    defb 0x28, 0x22, 0x21  ; 't' (116)
-    defb 0x06, 0x66, 0x68  ; 'u' (117)
-    defb 0x06, 0x66, 0x62  ; 'v' (118)
-    defb 0x06, 0x88, 0x82  ; 'w' (119)
-    defb 0x06, 0x26, 0x66  ; 'x' (120)
-    defb 0x06, 0x64, 0x17  ; 'y' (121)
-    defb 0x08, 0x12, 0x58  ; 'z' (122)
-    defb 0x42, 0x52, 0x24  ; '{' (123)
-    defb 0x22, 0x22, 0x22  ; '|' (124)
-    defb 0x72, 0x12, 0x27  ; '}' (125)
-    defb 0x36, 0x00, 0x00  ; '~' (126)
-    defb 0x99, 0x99, 0x99  ; DEL (127) - solid block for progress bar (LUT[9]=0xFF)
+    defb 0x88, 0x88, 0x08  ; '!' (33)
+    defb 0x0A, 0xA0, 0x00  ; '"' (34)
+    defb 0x0A, 0xEA, 0xEA  ; '#' (35)
+    defb 0x4E, 0x8E, 0x2E  ; '$' (36)
+    defb 0xA2, 0x6C, 0x8A  ; '%' (37)
+    defb 0x4A, 0x4A, 0xC6  ; '&' (38)
+    defb 0x48, 0x00, 0x00  ; ''' (39)
+    defb 0x48, 0x88, 0x84  ; '(' (40)
+    defb 0x84, 0x44, 0x48  ; ')' (41)
+    defb 0x0A, 0x4E, 0x4A  ; '*' (42)
+    defb 0x04, 0x4E, 0x44  ; '+' (43)
+    defb 0x00, 0x04, 0x48  ; ',' (44)
+    defb 0x00, 0x0E, 0x00  ; '-' (45)
+    defb 0x00, 0x00, 0xCC  ; '.' (46)
+    defb 0x22, 0x44, 0x88  ; '/' (47)
+    defb 0x4A, 0xAE, 0xA4  ; '0' (48)
+    defb 0x4C, 0x44, 0x4E  ; '1' (49)
+    defb 0x4A, 0x24, 0x8E  ; '2' (50)
+    defb 0xE2, 0x42, 0xA4  ; '3' (51)
+    defb 0x8A, 0xAE, 0x22  ; '4' (52)
+    defb 0xE8, 0xC2, 0x2C  ; '5' (53)
+    defb 0x68, 0xCA, 0xA4  ; '6' (54)
+    defb 0xE2, 0x24, 0x44  ; '7' (55)
+    defb 0x4A, 0x4A, 0xA4  ; '8' (56)
+    defb 0x4A, 0xA6, 0x2C  ; '9' (57)
+    defb 0x00, 0x80, 0x08  ; ':' (58)
+    defb 0x04, 0x04, 0x48  ; ';' (59)
+    defb 0x02, 0x48, 0x42  ; '<' (60)
+    defb 0x00, 0xE0, 0xE0  ; '=' (61)
+    defb 0x08, 0x42, 0x48  ; '>' (62)
+    defb 0x4A, 0x24, 0x04  ; '?' (63)
+    defb 0x4A, 0xEE, 0x84  ; '@' (64)
+    defb 0x4A, 0xAE, 0xAA  ; 'A' (65)
+    defb 0xCA, 0xCA, 0xAC  ; 'B' (66)
+    defb 0x68, 0x88, 0x86  ; 'C' (67)
+    defb 0xCA, 0xAA, 0xAC  ; 'D' (68)
+    defb 0xE8, 0xC8, 0x8E  ; 'E' (69)
+    defb 0xE8, 0xC8, 0x88  ; 'F' (70)
+    defb 0x4A, 0x8E, 0xA4  ; 'G' (71)
+    defb 0xAA, 0xEA, 0xAA  ; 'H' (72)
+    defb 0xE4, 0x44, 0x4E  ; 'I' (73)
+    defb 0x62, 0x22, 0xA4  ; 'J' (74)
+    defb 0xAA, 0xEC, 0xAA  ; 'K' (75)
+    defb 0x88, 0x88, 0x8E  ; 'L' (76)
+    defb 0xAE, 0xEE, 0xAA  ; 'M' (77)
+    defb 0xEA, 0xAA, 0xAA  ; 'N' (78)
+    defb 0x4A, 0xAA, 0xA4  ; 'O' (79)
+    defb 0xCA, 0xAC, 0x88  ; 'P' (80)
+    defb 0x4A, 0xAA, 0xC6  ; 'Q' (81)
+    defb 0xCA, 0xAC, 0xAA  ; 'R' (82)
+    defb 0x68, 0x42, 0xA4  ; 'S' (83)
+    defb 0xE4, 0x44, 0x44  ; 'T' (84)
+    defb 0xAA, 0xAA, 0xAE  ; 'U' (85)
+    defb 0xAA, 0xAA, 0xA4  ; 'V' (86)
+    defb 0xAA, 0xEE, 0xE4  ; 'W' (87)
+    defb 0xAA, 0x4A, 0xAA  ; 'X' (88)
+    defb 0xAA, 0xA4, 0x44  ; 'Y' (89)
+    defb 0xE2, 0x44, 0x8E  ; 'Z' (90)
+    defb 0xC8, 0x88, 0x8C  ; '[' (91)
+    defb 0x88, 0x44, 0x22  ; '\' (92)
+    defb 0xC4, 0x44, 0x4C  ; ']' (93)
+    defb 0x4A, 0x00, 0x00  ; '^' (94)
+    defb 0x00, 0x00, 0x0F  ; '_' (95)
+    defb 0x88, 0x40, 0x00  ; '`' (96)
+    defb 0x0C, 0x26, 0xA6  ; 'a' (97)
+    defb 0x88, 0xCA, 0xAC  ; 'b' (98)
+    defb 0x06, 0x88, 0x86  ; 'c' (99)
+    defb 0x22, 0x6A, 0xA6  ; 'd' (100)
+    defb 0x04, 0xAE, 0x86  ; 'e' (101)
+    defb 0x4A, 0x8C, 0x88  ; 'f' (102)
+    defb 0x6A, 0xA6, 0x2C  ; 'g' (103)
+    defb 0x88, 0xCA, 0xAA  ; 'h' (104)
+    defb 0x40, 0xC4, 0x4E  ; 'i' (105)
+    defb 0x20, 0x62, 0xA4  ; 'j' (106)
+    defb 0x88, 0xAC, 0xAA  ; 'k' (107)
+    defb 0x88, 0x88, 0xA4  ; 'l' (108)
+    defb 0x0A, 0xEE, 0xAA  ; 'm' (109)
+    defb 0x0C, 0xAA, 0xAA  ; 'n' (110)
+    defb 0x04, 0xAA, 0xA4  ; 'o' (111)
+    defb 0x0C, 0xAC, 0x88  ; 'p' (112)
+    defb 0x06, 0xA6, 0x22  ; 'q' (113)
+    defb 0x06, 0x88, 0x88  ; 'r' (114)
+    defb 0x06, 0x84, 0x2C  ; 's' (115)
+    defb 0x4E, 0x44, 0x42  ; 't' (116)
+    defb 0x0A, 0xAA, 0xAE  ; 'u' (117)
+    defb 0x0A, 0xAA, 0xA4  ; 'v' (118)
+    defb 0x0A, 0xEE, 0xE4  ; 'w' (119)
+    defb 0x0A, 0x4A, 0xAA  ; 'x' (120)
+    defb 0x0A, 0xA6, 0x2C  ; 'y' (121)
+    defb 0x0E, 0x24, 0x8E  ; 'z' (122)
+    defb 0x64, 0x84, 0x46  ; '{' (123)
+    defb 0x44, 0x44, 0x44  ; '|' (124)
+    defb 0xC4, 0x24, 0x4C  ; '}' (125)
+    defb 0x5A, 0x00, 0x00  ; '~' (126)
+    defb 0xFF, 0xFF, 0xFF  ; DEL (127) - solid block for progress bar (both row nibbles=0xF)
 
 ; -----------------------------------------------------------------------------
 ; unpack_glyph - Decompress one glyph from font64_packed
@@ -848,93 +853,46 @@ font64_packed:
 ; Destroys: AF, BC, DE
 ; -----------------------------------------------------------------------------
 unpack_glyph:
-    sub 32
-    jr nz, unpack_not_space
-    ; --- Space short-circuit: fill glyph_buffer with 0x00 (~50 t-states) ---
-    ld hl, glyph_buffer
+    call packed_glyph_addr
+    ld de, glyph_buffer
+    ld b, 3
+ug_loop:
+    ; Each packed byte contains two actual 4px rows (SpecTalkZX).
+    ld a, (hl)
+    rrca
+    rrca
+    rrca
+    rrca
+    xor (hl)
+    ld c, a
+    and 0x0F
+    xor (hl)
+    ld (de), a
+    inc de
+    ld a, c
+    and 0xF0
+    xor (hl)
+    ld (de), a
+    inc de
+    inc hl
+    djnz ug_loop
     xor a
-    ld (hl), a
-    inc hl
-    ld (hl), a
-    inc hl
-    ld (hl), a
-    inc hl
-    ld (hl), a
-    inc hl
-    ld (hl), a
-    inc hl
-    ld (hl), a
-    inc hl
-    ld (hl), a
-    inc hl
-    ld (hl), a
+    ld (de), a
+    inc de
+    ld (de), a
     ld hl, glyph_buffer
     ret
-unpack_not_space:
+
+; A = ASCII 32..127, HL = three packed row pairs. Preserves DE/IX/IY.
+packed_glyph_addr:
     ld l, a
     ld h, 0
     ld c, l
     ld b, h
-    add hl, hl          ; *2
-    add hl, bc          ; *3
-    ld bc, font64_packed
-    add hl, bc           ; HL = compressed source
-
-    ex de, hl            ; DE = source
-    ld hl, glyph_buffer  ; HL = destination
-
-    ; Alternate set: DE' = font_lut (page-safe lookup through HL')
-    exx
-    ld de, font_lut
-    exx
-
-    ; Unpack 3 bytes -> 6 lines (0-5)
-    ld b, 3
-ug_loop:
-    ld a, (de)
-    ld c, a
-
-    ; High nibble -> LUT -> line N
-    rrca
-    rrca
-    rrca
-    rrca
-    and 0x0F
-    exx                  ; alt set: DE' = font_lut
-    add a, e
-    ld l, a
-    adc a, d
-    sub l
-    ld h, a              ; HL' = font_lut + nibble, carry included
-    ld a, (hl)           ; LUT lookup
-    exx                  ; back to main set
-    ld (hl), a
-    inc hl
-
-    ; Low nibble -> LUT -> line N+1
-    ld a, c
-    and 0x0F
-    exx
-    add a, e
-    ld l, a
-    adc a, d
-    sub l
-    ld h, a
-    ld a, (hl)
-    exx
-    ld (hl), a
-    inc hl
-
-    inc de
-    djnz ug_loop
-
-    ; Lines 6-7 = 0x00
-    xor a
-    ld (hl), a
-    inc hl
-    ld (hl), a
-
-    ld hl, glyph_buffer
+    add hl, hl
+    add hl, bc
+    ld bc, font64_packed - 96
+    add hl, bc
     ret
 
 ; -----------------------------------------------------------------------------
@@ -1081,7 +1039,7 @@ p64_set_attr:
 ; Renders a full 64-column row two characters (one screen byte) at a time,
 ; writing whole bytes (no AND/OR preservation), then fills 32 attributes.
 ; NUL pads the rest of the row; bytes outside 32..127 render blank.
-; Blank pairs (both cells blank) skip both glyph unpacks (SpecTalkZX).
+; Blank pairs skip glyph reads; other pairs combine packed rows directly (SpecTalkZX).
 ; Vertical layout matches print_str64_char: scanline 0 blank, glyph rows on
 ; scanlines 1..6, scanline 7 blank.
 ;
@@ -1127,7 +1085,6 @@ plf_pair_loop:
     ld c, a                ; C = left char
     call plf_fetch
     ld b, a                ; B = right char
-    ld (plf_str_ptr), de
     ld a, c
     cp b
     jr nz, plf_glyphs
@@ -1146,41 +1103,53 @@ plf_blank_loop:
     jr plf_next
 
 plf_glyphs:
+    push de                ; next string cell
     push bc                ; B = right, C = left
     ld a, c
-    call unpack_glyph      ; HL = glyph_buffer (destroys AF/BC/DE)
-    ld de, plf_left_buf
-    ld b, 8
-plf_save_left:
-    ld a, (hl)
-    and 0xF0
-    ld (de), a
-    inc hl
-    inc de
-    djnz plf_save_left
+    call packed_glyph_addr
+    push hl
+    pop ix                 ; packed left glyph
     pop bc
     ld a, b
-    call unpack_glyph      ; right glyph -> glyph_buffer
-
-    pop hl
-    push hl                ; HL = screen addr
-    ld (hl), 0             ; scanline 0
-    inc h
-    ld de, glyph_buffer
-    ld ix, plf_left_buf    ; frame no longer needed (restored at exit)
-    ld b, 7
+    call packed_glyph_addr ; packed right glyph
+    pop bc                 ; next string cell
+    pop de                 ; screen address
+    push de
+    push bc
+    xor a
+    ld (de), a             ; scanline 0
+    inc d
+    ld b, 3
 plf_write_loop:
-    ld a, (de)
+    ld c, (ix+0)
+    ld a, (hl)
+    rrca
+    rrca
+    rrca
+    rrca
+    xor c
     and 0x0F
-    or (ix+0)
-    ld (hl), a
+    xor c
+    ld (de), a             ; upper row: left high nibble, right high nibble
+    inc d
+    ld a, c
+    rlca
+    rlca
+    rlca
+    rlca
+    xor (hl)
+    and 0xF0
+    xor (hl)
+    ld (de), a             ; lower row: left low nibble, right low nibble
     inc ix
-    inc de
-    inc h
+    inc hl
+    inc d
     djnz plf_write_loop
+    xor a
+    ld (de), a             ; scanline 7
+    pop de                 ; next string cell
 
 plf_next:
-    ld de, (plf_str_ptr)
     pop hl
     inc hl                 ; next byte column
     pop bc

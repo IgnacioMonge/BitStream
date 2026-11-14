@@ -113,7 +113,7 @@
 #define HISTORY_LEN     40
 
 // --- EXTERNAL UART DRIVER (classic builds) ---
-// divMMC backend: TX failures latch uart_tx_failed (fail-stop) until
+// Hardware UARTs: TX failures (and Next RX faults) latch uart_tx_failed until
 // ay_uart_init(). The AY bit-bang backend never fails a transmit.
 #ifndef BITSTREAM_SPECTRANEXT
 extern void     ay_uart_init(void);

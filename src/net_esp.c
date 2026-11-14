@@ -555,6 +555,11 @@ static void dm_process(void)
 #ifdef HW_UART
         if (!(++n & 31)) uart_drain_to_buffer();
 #endif
+        if (uart_tx_failed) {
+            ev_flags = EV_ERROR;
+            ctrl_ready = 0;
+            return;
+        }
         if (dm_state == DM_DATA) {
             if (!dm_discard) return;
             c = rb_pop();
@@ -768,6 +773,7 @@ static int16_t net_data_read(uint8_t *dst, uint16_t max)
     uint16_t n;
 
     dm_process();
+    if (uart_tx_failed) return 0;  // ftp_xfer_read reports transport loss, even after 226
     if (dm_state != DM_DATA || dm_discard) {
         return (ev_flags & EV_CLOSED1) ? NET_EOF : 0;
     }

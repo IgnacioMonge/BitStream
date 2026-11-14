@@ -56,7 +56,7 @@ PUBLIC _uart_drain_to_buffer
 EXTERN _utf8_to_ascii, _main_puts, _main_print_asm, _rb_read_block
 EXTERN _print_line64_fast, _print_str64_char, _scroll_main_zone
 EXTERN _g_ps64_y, _g_ps64_col, _g_ps64_attr, _cache_row_y
-EXTERN _plf_maxlen, _put_char64_input_cached, _draw_cursor_underline
+EXTERN _plf_maxlen, _put_char64_input_cached, _draw_cursor_underline, _draw_big_char
 entry:
     di
     ld sp, 0xFF00
@@ -309,10 +309,10 @@ plf_slow_{k}:
     print(f'PASS print_line64_fast == 64 x print_str64_char on 4 rows ({cf} T vs {cs} T)')
 
 
-def test_scroll():
+def test_scroll(enabled=True):
     def setup(mem):
         mem[GLOBALS['_current_attr']] = 0x38
-    body = '''    ei
+    body = ('    ei\n' if enabled else '    di\n') + '''
     call _scroll_main_zone
     ld a, i
     ld a, 0
@@ -341,20 +341,36 @@ scroll_di:
         else:
             want = before[at:at + 32]
         assert after[at:at + 32] == want, f'attr row {row}'
-    assert after[0xB012] == 1, 'scroll must keep interrupts enabled'
-    print(f'PASS scroll_main_zone: geometry exact, IFF kept ({cyc} T, uncontended)')
+    assert after[0xB012] == int(enabled), 'scroll changed interrupt state'
+    print(f'PASS scroll_main_zone: geometry exact, IFF={int(enabled)} kept ({cyc} T, uncontended)')
 
 
+# Original LUT-coded font, frozen before the SpecTalkZX packed-row conversion.
 LUT = bytes([0x00, 0x22, 0x44, 0x55, 0x66, 0x88, 0xAA, 0xCC, 0xEE, 0xFF])
+FONT_REFERENCE = bytes.fromhex(
+    '000000555505066000068686285818614756262674250000'
+    '255552522225062826022822000225000800000077112255'
+    '266862272228261258812162566811857117457662811222'
+    '262662266417005005020225012521008080052125261202'
+    '268852266866767667455554766667857558857555265862'
+    '668666822228411162668766555558688866866666266662'
+    '766755266674766766452162822222666668666662668882'
+    '662666666222812258755557552211722227260000000009'
+    '552000071464557667045554114664026854265755466417'
+    '557666207228104162556766555562068866076666026662'
+    '076755046411045555045217282221066668066662068882'
+    '062666066417081258425224222222721227360000999999'
+)
+PACKED_FONT = bytes((LUT[x >> 4] & 0xF0) | (LUT[x & 15] & 15)
+                    for x in FONT_REFERENCE)
 
 
-def font_rows(code, ch):
-    base = code.index(LUT) + len(LUT)            # font64_packed follows font_lut
-    b = code[base + (ch - 32) * 3: base + (ch - 32) * 3 + 3]
+def font_rows(ch):
+    b = FONT_REFERENCE[(ch - 32) * 3:(ch - 32) * 3 + 3]
     return [LUT[n] for x in b for n in (x >> 4, x & 15)]
 
 
-def test_glyphs_any_lut_address():
+def test_glyphs_relocated():
     chars = list(range(32, 128))
     body = '    ld a, 0xFF\n    ld (_cache_row_y), a\n    ld a, 0x47\n    ld (_g_ps64_attr), a\n'
     for i, ch in enumerate(chars):
@@ -366,22 +382,45 @@ def test_glyphs_any_lut_address():
     call _print_str64_char
 '''
     *_, code = run(body, want_code=True)
-    lut_at = 0x8000 + code.index(LUT)
+    lut_at = 0x8000 + code.index(PACKED_FONT)
     tested = []
     for low in (0xF8, 0xFE, (lut_at & 0xFF)):
         pad = (low - (lut_at & 0xFF)) % 256
         _, after, _, code2 = run(body, pad=pad, want_code=True)
-        at = 0x8000 + code2.index(LUT)
+        at = 0x8000 + code2.index(PACKED_FONT)
         assert at & 0xFF == low, hex(at)
         for i, ch in enumerate(chars):
             row, col = 10 + i // 64, i % 64
-            rows = font_rows(code2, ch)
+            rows = font_rows(ch)
             mask = 0xF0 if col % 2 == 0 else 0x0F
             got = [after[screen_addr(row, sc) + col // 2] & mask for sc in range(8)]
             want = [0] + [r & mask for r in rows] + [0]
-            assert got == want, f'char {ch} with font_lut at {at:04X}: {got} != {want}'
+            assert got == want, f'char {ch} with font at {at:04X}: {got} != {want}'
         tested.append(f'{at:04X}')
-    print('PASS glyph decode for all 96 chars with font_lut at ' + ', '.join(tested))
+    print('PASS glyph decode for all 96 chars with font at ' + ', '.join(tested))
+
+
+def test_big_glyphs():
+    body = ''
+    for i, ch in enumerate(range(32, 128)):
+        body += f'''    ld a, {(0, 7, 15)[i // 32]}
+    ld (_g_ps64_y), a
+    ld a, {i % 32}
+    ld (_g_ps64_col), a
+    ld l, {ch}
+    call _draw_big_char
+'''
+    before, after, _ = run(body)
+    want = bytearray(before)
+    for i, ch in enumerate(range(32, 128)):
+        row, col = (0, 7, 15)[i // 32], i % 32
+        mask = 0xF0 if col % 2 == 0 else 0x0F
+        rows = [0, 0] + [r for r in font_rows(ch) for _ in range(2)] + [0, 0]
+        for scan, pixels in enumerate(rows):
+            at = screen_addr(row + scan // 8, scan % 8) + col // 2
+            want[at] = (want[at] & (mask ^ 0xFF)) | (pixels & mask)
+    assert after[0x4000:0x5B00] == want[0x4000:0x5B00], 'double-height glyphs/attributes differ'
+    print('PASS double-height: original 96 glyphs, both nibbles, screen-third boundaries')
 
 
 def wrap_lines(s):
@@ -521,13 +560,15 @@ def test_input_cells():
 
 
 if __name__ == '__main__':
-    test_glyphs_any_lut_address()
+    test_glyphs_relocated()
+    test_big_glyphs()
     test_utf8()
     test_bpe_guard()
     test_main_print_lf()
     test_rb_read_block()
     test_plf_equivalence()
     test_scroll()
+    test_scroll(False)
     test_word_wrap()
     test_input_cells()
     print('ALL ASM CPU TESTS PASSED')
